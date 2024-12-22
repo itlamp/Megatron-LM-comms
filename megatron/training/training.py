@@ -514,7 +514,7 @@ def update_train_iters(args):
     print_rank_0(f'setting training iterations to {args.train_iters}')
 
 
-def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap_with_ddp=True):
+def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap_with_ddp=True, parallel_output=True):
     """Build the model."""
     args = get_args()
     args.model_type = model_type
@@ -532,7 +532,8 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             post_process = mpu.is_pipeline_last_stage()
             this_model = model_provider_func(
                 pre_process=pre_process,
-                post_process=post_process
+                post_process=post_process,
+                parallel_output=parallel_output
             )
             this_model.model_type = model_type
             model.append(this_model)
@@ -558,7 +559,8 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
         else:
             model = model_provider_func(
                 pre_process=pre_process,
-                post_process=post_process
+                post_process=post_process,
+                parallel_output=parallel_output
             )
         model.model_type = model_type
 
@@ -1908,10 +1910,13 @@ def evaluate_and_print_results(prefix, forward_step_func,
                 writer.add_scalar('{} validation ppl vs tokens'.format(key), ppl,
                                   args.consumed_train_samples * args.seq_length)
             if wandb_writer and is_last_rank():
-                wandb_writer.log({
-                    '{} validation'.format(key): total_loss_dict[key].item()},
-                    iteration)
-
+                try:
+                    wandb_writer.log({
+                        '{} validation'.format(key): total_loss_dict[key].item()},
+                        iteration)
+                except:
+                    pass
+                
     if process_non_loss_data_func is not None and writer and is_last_rank():
         process_non_loss_data_func(collected_non_loss_data, iteration, writer)
 
