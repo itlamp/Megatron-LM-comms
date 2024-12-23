@@ -520,6 +520,8 @@ class TransformerConfig(ModelParallelConfig):
     disable_parameter_transpose_cache: bool = False
     """When set to true, the parameter transposes are not cached for subsequent iterations."""
 
+    asynch_p: int = 1
+
     enable_compiled_autograd: bool = False
     """"When set to true, enable compiled autograd"""
 

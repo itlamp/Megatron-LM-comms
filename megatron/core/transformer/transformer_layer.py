@@ -330,6 +330,9 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
+        self.residlayer_1 = ResidCloneGrad()
+        self.residlayer_2 = ResidCloneGrad()
+
     @staticmethod
     def _get_layer_offset(config: TransformerConfig):
         """
@@ -403,6 +406,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             sequence_len_offset=sequence_len_offset,
         )
 
+        residual = self.residlayer_1.apply(residual)
+
         if self.use_pre_norm:
             # TODO: could we move `bias_dropout_add_exec_handler` itself
             # inside the module provided in the `bias_dropout_add_spec` module?
@@ -452,6 +457,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
         # MLP.
         mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
+        residual = self.residlayer_2.apply(residual)
 
         if self.use_pre_norm:
             # TODO: could we move `bias_dropout_add_exec_handler` itself
@@ -522,3 +528,85 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             ), f"Attention mask must not be set when using CUDA graphs for decode"
             return self.cudagraph_manager(self, args, kwargs)
         return super(MegatronModule, self).__call__(*args, **kwargs)
+
+
+def get_transformer_layer_offset(config: TransformerConfig):
+    """Get the index number of this layer, given the level of pipelining."""
+    pipeline_rank = parallel_state.get_pipeline_model_parallel_rank()
+
+    num_layers_per_pipeline_rank = config.num_layers // config.pipeline_model_parallel_size
+
+    if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
+        vp_rank = parallel_state.get_virtual_pipeline_model_parallel_rank()
+        vp_size = parallel_state.get_virtual_pipeline_model_parallel_world_size()
+
+        total_num_layers = config.num_layers
+        num_layers_per_virtual_rank = num_layers_per_pipeline_rank // vp_size
+        total_virtual_chunks = total_num_layers // vp_size
+        offset = vp_rank * total_virtual_chunks + (pipeline_rank * num_layers_per_virtual_rank)
+
+    else:
+        # Each stage gets a contiguous set of layers.
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+            if (
+                config.first_pipeline_num_layers is not None
+                or config.last_pipeline_num_layers is not None
+            ):
+                # Calculate number of pipelines for distributing layers
+                middle_pipeline_stages = parallel_state.get_pipeline_model_parallel_world_size()
+                middle_pipeline_stages -= sum(
+                    [
+                        1 if x is not None else 0
+                        for x in (config.first_pipeline_num_layers, config.last_pipeline_num_layers)
+                    ]
+                )
+
+                # Calculate layers to distribute
+                first_pipeline_offset = (
+                    0
+                    if config.first_pipeline_num_layers is None
+                    else config.first_pipeline_num_layers
+                )
+                last_pipeline_offset = (
+                    0
+                    if config.last_pipeline_num_layers is None
+                    else config.last_pipeline_num_layers
+                )
+
+                middle_num_layers = config.num_layers - first_pipeline_offset - last_pipeline_offset
+
+                if middle_pipeline_stages > 0:
+                    num_layers_per_pipeline_rank = middle_num_layers // middle_pipeline_stages
+                else:
+                    num_layers_per_pipeline_rank = 0
+
+                middle_pipeline_rank = (
+                    pipeline_rank if config.first_pipeline_num_layers is None else pipeline_rank - 1
+                )
+
+                if pipeline_rank == 0:
+                    offset = 0
+                else:
+                    offset = (
+                        middle_pipeline_rank * num_layers_per_pipeline_rank
+                    ) + first_pipeline_offset
+            else:
+                offset = pipeline_rank * num_layers_per_pipeline_rank
+        else:
+            offset = 0
+
+    return offset
+
+    
+class ResidCloneGrad(torch.autograd.Function):
+    """DropComm layer applies masking to simulate drop of communication between TP ranks (backward).
+    """
+
+    @staticmethod
+    def forward(ctx, residual):
+        return residual
+    
+    @staticmethod
+    def backward(ctx, g_residual):
+       return g_residual.clone()
+

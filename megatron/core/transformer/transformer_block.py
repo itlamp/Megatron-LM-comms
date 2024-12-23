@@ -32,6 +32,7 @@ try:
     from megatron.core.extensions.intel_transformer_engine import IntelTEDelayedScaling
 except:
     print("Could not import Intel Transformer Engine")
+from megatron.core.tensor_parallel.layers import copy_to_tensor_model_parallel_region
 
 try:
     from megatron.core.extensions.transformer_engine import (  # pylint: disable=unused-import
@@ -600,6 +601,7 @@ class TransformerBlock(MegatronModule):
                     packed_seq_params=packed_seq_params,
                 )
             else:
+                hidden_states = copy_to_tensor_model_parallel_region(hidden_states)
                 for l_no, layer in enumerate(self.layers):
                     with self.offload_context:
                         layer.use_cudagraph = True

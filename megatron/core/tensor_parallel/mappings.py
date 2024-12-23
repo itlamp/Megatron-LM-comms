@@ -21,7 +21,7 @@ else:
     dist_reduce_scatter_func = torch.distributed._reduce_scatter_base
 
 
-def _reduce(input_):
+def _reduce(input_, partial=False):
     """All-reduce the input tensor across model parallel group."""
 
     # Bypass the function if we are using only 1 GPU.
@@ -30,7 +30,10 @@ def _reduce(input_):
         return input_
 
     # All-reduce.
-    torch.distributed.all_reduce(input_.contiguous(), group=get_tensor_model_parallel_group())
+    if partial:
+        torch.distributed.all_reduce(input_, group=get_tensor_model_parallel_group())
+    else:
+        torch.distributed.all_reduce(input_.contiguous(), group=get_tensor_model_parallel_group())
 
     return input_
 
@@ -198,6 +201,45 @@ def _reduce_scatter_along_first_dim(
             output = torch.empty_like(input_tensor_list[rank])
         torch.distributed.reduce_scatter(output, input_tensor_list, group=group)
     return output
+
+class _PartialReduceFromModelParallelRegion(torch.autograd.Function):
+    """All-reduce the input from the model parallel region."""
+
+    @staticmethod
+    def symbolic(graph, input_, drop_p):
+        _, _, hidden = input_.shape
+        if drop_p != 1:
+            # a = input_[:,:,:int(hidden * drop_p)].clone()
+            # b =_reduce(a)
+            # return torch.cat((b,input_[:,:,int(hidden * drop_p):]), dim=-1)
+            _reduce(input_[:,:,:int(hidden * drop_p)], partial=True)
+            return (input_)
+        else:
+            return _reduce(input_)
+    
+    @staticmethod
+    def forward(ctx, input_, drop_p):
+        _, _, hidden = input_.shape
+        ctx.drop_p = drop_p
+        if drop_p != 1:
+            # a = input_[:,:,:int(hidden * drop_p)].clone()
+            # b =_reduce(a)
+            # return torch.cat((b,input_[:,:,int(hidden * drop_p):]), dim=-1)
+            _reduce(input_[:,:,:int(hidden * drop_p)], partial=True)
+            return input_
+        else:
+            return _reduce(input_)
+        
+    @staticmethod
+    def backward(ctx, grad_output):
+        _, _, hidden = grad_output.shape
+        drop_p = ctx.drop_p
+        if drop_p != 1:
+            a = grad_output[:,:,:int(hidden * drop_p)].clone() if drop_p != 1 else grad_output     
+            b = _reduce(a)
+            return torch.cat((b,grad_output[:,:,int(hidden * drop_p):]), dim=-1), None
+        else:
+            return _reduce(grad_output), None
 
 
 class _CopyToModelParallelRegion(torch.autograd.Function):
@@ -474,6 +516,9 @@ def copy_to_tensor_model_parallel_region(input_):
 def reduce_from_tensor_model_parallel_region(input_):
     """Wrapper for autograd function: forward: all reduce, backward copy"""
     return _ReduceFromModelParallelRegion.apply(input_)
+
+def partial_reduce_from_tensor_model_parallel_region(input_, asynch_p=1):
+    return _PartialReduceFromModelParallelRegion.apply(input_, asynch_p)
 
 
 def scatter_to_tensor_model_parallel_region(input_):

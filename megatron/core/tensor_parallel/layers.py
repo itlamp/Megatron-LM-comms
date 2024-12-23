@@ -33,6 +33,7 @@ from .mappings import (
     gather_from_sequence_parallel_region,
     gather_from_tensor_model_parallel_region,
     reduce_from_tensor_model_parallel_region,
+    partial_reduce_from_tensor_model_parallel_region,
     reduce_scatter_to_sequence_parallel_region,
     scatter_to_tensor_model_parallel_region,
 )
@@ -849,10 +850,11 @@ class ColumnParallelLinear(torch.nn.Module):
                 f"is {world_size}. Disabling sequence parallel."
             )
             self.sequence_parallel = False
-
-        self.allreduce_dgrad = (
-            world_size > 1 and not self.sequence_parallel and not self.disable_grad_reduce
-        )
+        self.allreduce_dgrad = False
+        #TODO flag this option in as well!
+        # self.allreduce_dgrad = (
+        #     world_size > 1 and not self.sequence_parallel and not self.disable_grad_reduce
+        # )
 
         if config.gradient_accumulation_fusion and not _grad_accum_fusion_available:
             raise RuntimeError(
@@ -924,16 +926,16 @@ class ColumnParallelLinear(torch.nn.Module):
                 ), "CPU Offloading cannot be enabled while using non-TE modules"
 
         bias = self.bias if not self.skip_bias_add else None
-
-        if (
-            self.allreduce_dgrad
-            or self.sequence_parallel
-            or self.explicit_expert_comm
-            or self.disable_grad_reduce
-        ):
-            input_parallel = input_
-        else:
-            input_parallel = copy_to_tensor_model_parallel_region(input_)
+        input_parallel = input_
+        # if (
+        #     self.allreduce_dgrad
+        #     or self.sequence_parallel
+        #     or self.explicit_expert_comm
+        #     or self.disable_grad_reduce
+        # ):
+        #     input_parallel = input_
+        # else:
+        #     input_parallel = copy_to_tensor_model_parallel_region(input_)
 
         if self.config.defer_embedding_wgrad_compute:
             if (
@@ -1162,7 +1164,8 @@ class RowParallelLinear(torch.nn.Module):
             )
         )
 
-    def forward(self, input_):
+    #TODO flag this option in!
+    def forward(self, input_, keep_p=1):
         """Forward of RowParallelLinear
 
         Args:
@@ -1211,7 +1214,9 @@ class RowParallelLinear(torch.nn.Module):
         elif self.sequence_parallel:
             output_ = reduce_scatter_to_sequence_parallel_region(output_parallel)
         else:
-            output_ = reduce_from_tensor_model_parallel_region(output_parallel)
+            #TODO flag this option in!
+            # output_ = reduce_from_tensor_model_parallel_region(output_parallel)
+            output_ = partial_reduce_from_tensor_model_parallel_region(output_parallel, keep_p)
         if not self.skip_bias_add:
             output = (output_ + self.bias) if self.bias is not None else output_
             output_bias = None

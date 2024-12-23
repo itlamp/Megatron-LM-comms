@@ -138,6 +138,8 @@ class Attention(MegatronModule, ABC):
             tp_comm_buffer_name='proj',
         )
 
+        self.asynch_p = config.asynch_p
+
     def _checkpointed_attention_forward(
         self,
         query,
@@ -519,7 +521,7 @@ class Attention(MegatronModule, ABC):
         # Output. [sq, b, h]
         # =================
 
-        output, bias = self.linear_proj(core_attn_out)
+        output, bias = self.linear_proj(core_attn_out, self.asynch_p)
 
         return output, bias
 

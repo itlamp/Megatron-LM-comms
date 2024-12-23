@@ -93,6 +93,8 @@ class MLP(MegatronModule):
             tp_comm_buffer_name='fc2',
         )
 
+        self.asynch_p = config.asynch_p
+
         self.bias_activation_fusion = self.config.bias_activation_fusion
 
         if self.config.fp8_smooth_swiglu:  # should be enabled in row parallel fp8 training fwd only
@@ -136,7 +138,7 @@ class MLP(MegatronModule):
                 intermediate_parallel = self.activation_func(intermediate_parallel)
 
         # [s, b, h]
-        output, output_bias = self.linear_fc2(intermediate_parallel)
+        output, output_bias = self.linear_fc2(intermediate_parallel, self.asynch_p)
 
         return output, output_bias
 
