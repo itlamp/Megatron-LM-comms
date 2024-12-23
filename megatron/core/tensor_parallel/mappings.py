@@ -208,6 +208,8 @@ class _PartialReduceFromModelParallelRegion(torch.autograd.Function):
     @staticmethod
     def symbolic(graph, input_, drop_p):
         _, _, hidden = input_.shape
+        if drop_p==0:
+            return input_
         if drop_p != 1:
             # a = input_[:,:,:int(hidden * drop_p)].clone()
             # b =_reduce(a)

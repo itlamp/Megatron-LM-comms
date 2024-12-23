@@ -13,6 +13,7 @@ TOKENIZER_MODEL=${HL_TOKENIZER_MODEL:-}
 TRANSFORMER_IMPL=${HL_TRANSFORMER_IMPL:-transformer_engine}
 # Parallelism variables
 NUM_NODES=${HL_NUM_NODES:-1}
+ASYNCH=${HL_ASYNCH:-1} 
 DP=${HL_DP:-2}
 TP=${HL_TP:-2}
 PP=${HL_PP:-2}
@@ -464,6 +465,7 @@ CMD="${CMD} \
     --data-path ${DATA_PATH} \
     --num-workers ${NUM_WORKERS} \
     --distributed-timeout-minutes 60 \
+    --asynch_p ${ASYNCH} \
     "
 
 # Custom op solution, enabled conpile from second mini batch and regional compilation when use TE custom op.
