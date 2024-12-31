@@ -211,11 +211,11 @@ class _PartialReduceFromModelParallelRegion(torch.autograd.Function):
         if drop_p==0:
             return input_
         if drop_p != 1:
-            # a = input_[:,:,:int(hidden * drop_p)].clone()
-            # b =_reduce(a)
-            # return torch.cat((b,input_[:,:,int(hidden * drop_p):]), dim=-1)
-            _reduce(input_[:,:,:int(hidden * drop_p)], partial=True)
-            return (input_)
+            a = input_[:,:,:int(hidden * drop_p)].clone()
+            b =_reduce(a)
+            return torch.cat((b,input_[:,:,int(hidden * drop_p):]), dim=-1)
+            # _reduce(input_[:,:,:int(hidden * drop_p)], partial=True)
+            # return (input_)
         else:
             return _reduce(input_)
     
@@ -224,11 +224,11 @@ class _PartialReduceFromModelParallelRegion(torch.autograd.Function):
         _, _, hidden = input_.shape
         ctx.drop_p = drop_p
         if drop_p != 1:
-            # a = input_[:,:,:int(hidden * drop_p)].clone()
-            # b =_reduce(a)
-            # return torch.cat((b,input_[:,:,int(hidden * drop_p):]), dim=-1)
-            _reduce(input_[:,:,:int(hidden * drop_p)], partial=True)
-            return input_
+            a = input_[:,:,:int(hidden * drop_p)].clone()
+            b =_reduce(a)
+            return torch.cat((b,input_[:,:,int(hidden * drop_p):]), dim=-1)
+            # _reduce(input_[:,:,:int(hidden * drop_p)], partial=True)
+            # return input_
         else:
             return _reduce(input_)
         
@@ -237,11 +237,11 @@ class _PartialReduceFromModelParallelRegion(torch.autograd.Function):
         _, _, hidden = grad_output.shape
         drop_p = ctx.drop_p
         if drop_p != 1:
-            # a = grad_output[:,:,:int(hidden * drop_p)].clone() if drop_p != 1 else grad_output     
-            # b = _reduce(a)
-            # return torch.cat((b,grad_output[:,:,int(hidden * drop_p):]), dim=-1), None
-             _reduce(grad_output[:,:,:int(hidden * drop_p)], partial=True)
-             return grad_output, None
+            a = grad_output[:,:,:int(hidden * drop_p)].clone() if drop_p != 1 else grad_output     
+            b = _reduce(a)
+            return torch.cat((b,grad_output[:,:,int(hidden * drop_p):]), dim=-1), None
+            #  _reduce(grad_output[:,:,:int(hidden * drop_p)], partial=True)
+            #  return grad_output, None
         else:
             return _reduce(grad_output), None
 
