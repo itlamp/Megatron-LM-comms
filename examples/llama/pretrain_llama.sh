@@ -237,7 +237,7 @@ elif [[ "${LLAMA_VER}" = "3.1" ]]; then
     fi
 elif [ "$LLAMA_VER" = "0" ]; then
     TOKENIZER_TYPE=${HL_TOKENIZER_TYPE:-GPTSentencePieceTokenizer}
-    GLOBAL_BATCH_SIZE=${HL_GBS:-2048} # microbatches in the pipeline (computed as `GLOBAL_BATCH / (DP * MICRO_BATCH)`) should be divisible by the PP
+    GLOBAL_BATCH_SIZE=${HL_GBS:-256} # microbatches in the pipeline (computed as `GLOBAL_BATCH / (DP * MICRO_BATCH)`) should be divisible by the PP
     MAX_SEQ_LEN=${HL_SEQ_LEN:-1024}
     TRAIN_ITERS=${HL_TRAIN_ITERS:-100000}
     ADAM_EPS=1e-8
