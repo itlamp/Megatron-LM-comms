@@ -232,6 +232,26 @@ elif [[ "${LLAMA_VER}" = "3.1" ]]; then
         LR=8e-5
         MIN_LR=8e-7
     else
+        echo "invalid LLAMA_MODEL_SIZE: ${LLAMA_MODEL_SIZE}"
+        exit 1
+    fi
+elif [ "$LLAMA_VER" = "0" ]; then
+    TOKENIZER_TYPE=${HL_TOKENIZER_TYPE:-GPTSentencePieceTokenizer}
+    GLOBAL_BATCH_SIZE=${HL_GBS:-2048} # microbatches in the pipeline (computed as `GLOBAL_BATCH / (DP * MICRO_BATCH)`) should be divisible by the PP
+    MAX_SEQ_LEN=${HL_SEQ_LEN:-1024}
+    TRAIN_ITERS=${HL_TRAIN_ITERS:-100000}
+    ADAM_EPS=1e-8
+    LR_WARMUP_ITERS=2000
+    ROTARY_BASE=10000
+    if [[ ${LLAMA_MODEL_SIZE} == 125 ]]; then
+        HIDDEN_SIZE=768
+        NUM_HEADS=12
+        NUM_QUERY_GROUPS=12
+        NUM_LAYERS=${HL_NUM_LAYERS:-12}
+        FFN_HIDDEN_SIZE=2048
+        LR=6e-4
+        MIN_LR=6e-5
+    else
         echo "incorrect HL_LLAMA_MODEL_SIZE=${LLAMA_MODEL_SIZE} is set"
         exit 1
     fi
