@@ -178,23 +178,13 @@ def _allreduce_layernorm_grads(model: List[torch.nn.Module], config: Transformer
 
     # All-reduce layernorm parameters across model parallel nodes
     # when sequence parallelism is used
-    if parallel_state.get_tensor_model_parallel_world_size() > 1 and (
-        config.sequence_parallel or config.qk_layernorm
-    ):
-        params = []
+
+    if parallel_state.get_tensor_model_parallel_world_size() > 1:
         grads = []
         for model_chunk in model:
             for name, param in get_attr_wrapped_model(model_chunk, 'named_parameters')():
-                if (
-                    param.requires_grad
-                    and getattr(param, 'sequence_parallel', False)
-                    or 'q_layernorm' in name
-                    or 'k_layernorm' in name
-                ):
-                    params.append(param)
-                    grad_attr = "main_grad" if hasattr(param, "main_grad") else "grad"
-                    grad = getattr(param, grad_attr)
-                    grad = _unshard_if_dtensor(grad)
+                if param.requires_grad and  'layernorm' in name:
+                    grad = param.main_grad
                     grads.append(grad.data)
         if grads:
             coalesced = _flatten_dense_tensors(grads)
