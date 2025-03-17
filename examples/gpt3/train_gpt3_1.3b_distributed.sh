@@ -27,7 +27,7 @@ CHECKPOINT_SAVE=${HL_SAVE:-1}
 SAVE_INTERVAL=${HL_SAVE_INTERVAL:-2000}
 DIST_CKPT_FORMAT=${HL_DIST_CKPT_FORMAT:-torch_dist}
 USE_DISTRIBUTED_OPTIMIZER=${HL_USE_DISTRIBUTED_OPTIMIZER:-1}
-USE_DIST_CKPT=${HL_USE_DIST_CKPT:-0}
+USE_DIST_CKPT=${HL_USE_DIST_CKPT:-1}
 LOAD_DIR=${HL_LOAD_DIR:-}
 CHECKPOINTS_DIR=${HL_CHECKPOINTS_DIR:-}
 VERIFY_CKPT=${HL_VERIFY_CKPT:-0}
@@ -232,7 +232,6 @@ CMD="${CMD} \
     --no-gradient-accumulation-fusion \
     --no-masked-softmax-fusion \
     --use-mcore-models \
-    --bf16 \
     --exit-interval ${EXIT_INTERVAL} \
     --tensorboard-dir ${TENSORBOARD_DIR} \
     --log-validation-ppl-to-tensorboard \
