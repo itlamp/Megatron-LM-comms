@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
+ EXP_NAME=Baseline_Orig_Repo
 
 set -ex
 
@@ -19,7 +20,7 @@ ASYNCH=${HL_ASYNCH:-1}
 DP=${HL_DP:-1}
 TP=${HL_TP:-8}
 PP=${HL_PP:-1}
-MICRO_BATCH_SIZE=${HL_MICRO_BATCH:-8} # batch_size
+MICRO_BATCH_SIZE=${HL_MICRO_BATCH:-16} # batch_size
 EXIT_INTERVAL=${HL_EXIT_INTERVAL:-0}
 OUTPUT_DIR=${HL_RESULTS_DIR:-}
 OUTPUT_DIR_PREFIX=${HL_RESULTS_DIR_PREFIX:-.}
@@ -243,6 +244,9 @@ CMD="${CMD} \
     --valid-data-path ${VALID_DATA_PATH} \
     --num-workers ${NUM_WORKERS} \
     --asynch_p ${ASYNCH} \
+    --wandb-project gpt3-large \
+    --wandb-exp-name ${EXP_NAME} \
+    --wandb-save-dir ${OUTPUT_DIR}\
     "
 
 if [[ "${SEQ_PARALLEL}" -eq 1 ]]; then
