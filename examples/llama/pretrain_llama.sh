@@ -3,6 +3,37 @@
 # © 2024-2025 Intel Corporation
 
 set -ex
+HL_LAUNCHER_TYPE=mpirun  
+HL_DATA_DIR_ROOT=/software/data/datasets/red_pajama 
+HL_DATA_CACHE_DIR=/software/data/dataset_idx/red_pajama  
+HL_TOKENIZER_MODEL=/software/data/datasets/red_pajama/tokenizer.model  
+HL_TRANSFORMER_IMPL=local  
+HL_DP=1  
+HL_TP=1  
+HL_PP=1  
+HL_ASYNCH=0.5
+HL_MICRO_BATCH=16  
+HL_EXIT_INTERVAL=0  
+HL_LOG_INTERVAL=10  
+HL_SAVE_INTERVAL=3000
+HL_CKP_ACT=0  
+HL_LLAMA_VER=0  
+HL_LLAMA_MODEL_SIZE=125
+HL_DROPOUT=0  
+HL_SEQ_PARALLEL=0
+HL_VERIFY_CKPT=0 
+HL_USE_FUSED_RMSNORM=1  
+HL_OPTIMIZER=fusedadamw  
+HL_EVAL_ITERS=100  
+HL_EVAL_INTERVAL=3000  
+HL_SAVE=1
+HL_TRAIN_ITERS=30000
+HL_KILL_SWITCH_FILE=$session_data_kill_switch_path  
+HL_HOSTSFILE=/root/hostsfile  
+HL_RESULTS_DIR=$session_data_logs_path  
+HL_CHECKPOINTS_DIR=$session_data_checkpoints_path  
+HL_TENSORBOARD_DIR=$session_data_tensorboard_path  
+
 
 # Distributed training variables
 LAUNCHER_TYPE=${HL_LAUNCHER_TYPE:-mpirun}
