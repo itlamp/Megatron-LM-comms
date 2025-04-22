@@ -2,3 +2,4 @@ regex
 sentencepiece
 tensorboard==2.12
 transformers
+wandb
