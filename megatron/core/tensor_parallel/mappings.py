@@ -30,10 +30,7 @@ def _reduce(input_, partial=False):
         return input_
 
     # All-reduce.
-    if partial:
-        torch.distributed.all_reduce(input_, group=get_tensor_model_parallel_group())
-    else:
-        torch.distributed.all_reduce(input_.contiguous(), group=get_tensor_model_parallel_group())
+    torch.distributed.all_reduce(input_, group=get_tensor_model_parallel_group())
 
     return input_
 
@@ -236,14 +233,13 @@ class _PartialReduceFromModelParallelRegion(torch.autograd.Function):
     def backward(ctx, grad_output):
         _, _, hidden = grad_output.shape
         drop_p = ctx.drop_p
+        grad_output.to(torch.float32)
         if drop_p != 1:
             a = grad_output[:,:,:int(hidden * drop_p)].clone() if drop_p != 1 else grad_output     
             b = _reduce(a)
-            return torch.cat((b,grad_output[:,:,int(hidden * drop_p):]), dim=-1), None
-            #  _reduce(grad_output[:,:,:int(hidden * drop_p)], partial=True)
-            #  return grad_output, None
+            return torch.cat((b,grad_output[:,:,int(hidden * drop_p):]), dim=-1).to(torch.bfloat16), None
         else:
-            return _reduce(grad_output), None
+            return _reduce(grad_output.to(torch.float32)).to(torch.bfloat16), None
 
 
 class _CopyToModelParallelRegion(torch.autograd.Function):
