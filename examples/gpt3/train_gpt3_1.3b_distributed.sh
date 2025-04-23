@@ -244,9 +244,7 @@ CMD="${CMD} \
     --valid-data-path ${VALID_DATA_PATH} \
     --num-workers ${NUM_WORKERS} \
     --asynch_p ${ASYNCH} \
-    --wandb-project gpt3-large \
-    --wandb-exp-name ${EXP_NAME} \
-    --wandb-save-dir ${OUTPUT_DIR}\
+    --bf16
     "
 
 if [[ "${SEQ_PARALLEL}" -eq 1 ]]; then
