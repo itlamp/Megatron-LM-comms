@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Copyright (C) 2024 Habana Labs, Ltd. an Intel Company.
- EXP_NAME=Baseline_Orig_Repo
+ EXP_NAME=drops_0.5
 
 set -ex
 
@@ -64,14 +64,24 @@ USE_TORCH_COMPILED_AUTOGRAD=${HL_USE_TORCH_COMPILED_AUTOGRAD:-0}
 USE_LAZY_MODE=${HL_USE_LAZY_MODE:-1}
 SKIP_TRAIN=${HL_SKIP_TRAIN:-0}
 NUM_WORKERS=${HL_NUM_WORKERS:-2}
+# NUM_LAYERS=24 # must be divisible by PP
+# HIDDEN_SIZE=1536
+# NHEADS=16 # must be divisible by TP
+# FFN_HIDDEN_SIZE=$(($HIDDEN_SIZE * 4))
+# MAX_SEQ_LEN=2048
+# GLOBAL_BATCH_SIZE=256
+# LR=2.5e-4
+# MIN_LR=2.5e-5
+# TOKENIZER_TYPE=GPT2BPETokenizer
+TOKENIZER_TYPE=GPT2BPETokenizer
 NUM_LAYERS=24 # must be divisible by PP
-HIDDEN_SIZE=1536
+HIDDEN_SIZE=2048
 NHEADS=16 # must be divisible by TP
 FFN_HIDDEN_SIZE=$(($HIDDEN_SIZE * 4))
 MAX_SEQ_LEN=2048
-GLOBAL_BATCH_SIZE=256
+GLOBAL_BATCH_SIZE=512
 LR=2.5e-4
-MIN_LR=2.5e-5
+MIN_LR=2.0e-5
 TOKENIZER_TYPE=GPT2BPETokenizer
 
 FP8_COVERAGE=${HL_FP8_COVERAGE:-"mlp_row_parallel=False attention=False"}
@@ -244,7 +254,11 @@ CMD="${CMD} \
     --valid-data-path ${VALID_DATA_PATH} \
     --num-workers ${NUM_WORKERS} \
     --asynch_p ${ASYNCH} \
-    --bf16
+    --wandb-project gpt3-xl \
+    --wandb-exp-name ${EXP_NAME} \
+    --wandb-save-dir ${OUTPUT_DIR}\
+    --bf16 \
+    --untie-embeddings-and-output-weights 
     "
 
 if [[ "${SEQ_PARALLEL}" -eq 1 ]]; then
