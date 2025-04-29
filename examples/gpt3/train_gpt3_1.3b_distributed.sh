@@ -257,8 +257,7 @@ CMD="${CMD} \
     --wandb-project gpt3-xl \
     --wandb-exp-name ${EXP_NAME} \
     --wandb-save-dir ${OUTPUT_DIR}\
-    --bf16 \
-    --untie-embeddings-and-output-weights 
+    --bf16 
     "
 
 if [[ "${SEQ_PARALLEL}" -eq 1 ]]; then

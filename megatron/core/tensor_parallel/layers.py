@@ -1133,6 +1133,13 @@ class RowParallelLinear(torch.nn.Module):
                     is_expert=self.is_expert,
                 )
         setattr(self.weight, 'allreduce', not (self.is_expert and self.expert_parallel))
+        
+        hidden, _ = self.weight.shape
+        p = config.asynch_p
+        tp_size = get_tensor_model_parallel_world_size()
+        if p != 1:
+            hidden = round(hidden*p)
+            self.weight.data[hidden:,:]=self.weight.data[hidden:,:]*(tp_size**(1/2))
 
         if bias:
             if config.use_cpu_initialization:
