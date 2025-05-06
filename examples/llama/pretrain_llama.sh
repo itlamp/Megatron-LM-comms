@@ -18,7 +18,6 @@ DP=${HL_DP:-2}
 TP=${HL_TP:-2}
 PP=${HL_PP:-2}
 CP=${HL_CP:-1}
-DTYPE=${HL_DTYPE: bf16}
 MICRO_BATCH_SIZE=${HL_MICRO_BATCH:-1} # batch_size
 EXIT_INTERVAL=${HL_EXIT_INTERVAL:-0}
 OUTPUT_DIR=${HL_RESULTS_DIR:-}
@@ -507,6 +506,7 @@ CMD="${CMD} \
     --num-workers ${NUM_WORKERS} \
     --distributed-timeout-minutes 60 \
     --asynch_p ${ASYNCH} \
+    --bf16
     "
 
 # Custom op solution, enabled conpile from second mini batch and regional compilation when use TE custom op.
@@ -533,11 +533,7 @@ fi
 
 if [[ "${USE_CPU_INIT}" -eq 1 ]]; then
     CMD="${CMD} --use-cpu-initialization"
-    
-if [[ "${DTYPE}" = "bf16" ]]; then
-    CMD="${CMD} --bf16"
 fi
-
 # Enable device sync at every micro batch execution level only for LLaMa 3.1 8B scenario
 if [[ "${LLAMA_VER}" = "3.1" ]] && [[ "${LLAMA_MODEL_SIZE}" = "8" ]] && [[ ${DP} = 8 ]] && [[ $((NUM_NODES*DEVICES_PER_NODE)) = 8 ]]; then
     TRAIN_MICRO_BATCH_SYNC_INTERVAL=${HL_MICRO_BATCH_SYNC_INTERVAL:-1}
