@@ -114,6 +114,7 @@ if __name__ == '__main__':
     dtype = 'bfloat16' #if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'  # 'float32' or 'bfloat16' or 'float16'
     tasks = ["wikitext", "lambada_openai", "hellaswag"]  # examples: --tasks='["lambada_openai"]'
     limit = 100
+    eot_token=50256 # 2 or 128001 for llama? 
     # -----------------------------------------------------------------------------
 
     torch.manual_seed(seed)
@@ -144,7 +145,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         # with ctx:
         results = evaluate(
-            lm=GPTModelWrapped(model, get_tokenizer(), device=device, max_gen_tokens=max_new_tokens, temperature=temperature, top_k=top_k, max_length=args.seq_length),
+            lm=GPTModelWrapped(model, get_tokenizer(), device=device, max_gen_tokens=max_new_tokens, temperature=temperature, top_k=top_k, max_length=args.seq_length, eot_token=eot_token),
             task_dict=lm_eval.tasks.get_task_dict(tasks),  limit=limit
         )
         print(make_table(results))
