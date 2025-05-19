@@ -30,7 +30,7 @@ from megatron.core.utils import get_model_config, get_model_type
 class GPTModelWrapped(BaseLM):
 
     def __init__(self, model: GPTModel, tokenizer: get_tokenizer, device="cuda", temperature=0.8, top_k=200,
-                 max_gen_tokens=128, batch_size=1, eot_token=2, max_length=1024):
+                 max_gen_tokens=2048, batch_size=1, eot_token=2, max_length=4096):
         super().__init__()
         self._model = model
         self._tokenizer = tokenizer
@@ -112,8 +112,8 @@ if __name__ == '__main__':
     seed = 1337
     device = 'cuda'  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
     dtype = 'bfloat16' #if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'  # 'float32' or 'bfloat16' or 'float16'
-    tasks = ["wikitext", "lambada_openai", "hellaswag"]  # examples: --tasks='["lambada_openai"]'
-    limit = 100
+    tasks = ["wikitext", "lambada_openai", "hellaswag", "winogrande", "piqa", "openbookqa", 'boolq']  # examples: --tasks='["lambada_openai"]'
+    limit = None
     eot_token=50256 # 2 or 128001 for llama? 
     # -----------------------------------------------------------------------------
 

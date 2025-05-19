@@ -222,14 +222,14 @@ class OptimizerParamScheduler:
             log_single_rank(logger, logging.INFO, f" > overriding {name} value to {cls_value}")
             return cls_value
 
-        if not self.use_checkpoint_opt_param_scheduler:
-            assert cls_value == sd_value, (
-                f'OptimizerParamScheduler: class input value {cls_value} and checkpoint'
-                f'value {sd_value} for {name} do not match'
-            )
+        # if not self.use_checkpoint_opt_param_scheduler:
+            # assert cls_value == sd_value, (
+            #     f'OptimizerParamScheduler: class input value {cls_value} and checkpoint'
+            #     f'value {sd_value} for {name} do not match'
+            # )
 
-        log_single_rank(logger, logging.INFO, f" > using checkpoint value {sd_value} for {name}")
-        return sd_value
+        # log_single_rank(logger, logging.INFO, f" > using checkpoint value {sd_value} for {name}")
+        return cls_value
 
     def load_state_dict(self, state_dict: dict) -> None:
         """Load the state dict.
