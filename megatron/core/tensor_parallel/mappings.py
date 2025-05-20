@@ -235,9 +235,9 @@ class _PartialReduceFromModelParallelRegion(torch.autograd.Function):
         drop_p = ctx.drop_p 
         # if drop_p != 1:
         a = grad_output.to(torch.float32)
-        b = a[:,:,:round(hidden * drop_p)].clone() #if drop_p != 1 else a     
+        b = a[:,:,:int(hidden * drop_p)].clone() #if drop_p != 1 else a     
         c = _reduce(b)
-        return torch.cat((c,a[:,:,round(hidden * drop_p):]), dim=-1).to(torch.bfloat16), None
+        return torch.cat((c,a[:,:,int(hidden * drop_p):]), dim=-1).to(torch.bfloat16), None
         # else:
         #     return _reduce(grad_output.to(torch.float32)).to(torch.bfloat16), None
 
