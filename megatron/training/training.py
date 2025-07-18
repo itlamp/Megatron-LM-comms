@@ -93,6 +93,7 @@ from .utils import (
     print_rank_last,
     report_memory,
     unwrap_model,
+    is_rank0,
     update_use_dist_ckpt,
     compile_regions,
 )
@@ -1841,7 +1842,7 @@ def evaluate(forward_step_func,
         collected_non_loss_data = None
         if non_loss_data_func is not None:
             collected_non_loss_data = non_loss_data_func(model)
-        elif process_non_loss_data_func is not None and is_last_rank():
+        elif process_non_loss_data_func is not None and is_rank0():
             collected_non_loss_data = forward_backward_func(
                 forward_step_func=forward_step_func,
                 data_iterator=data_iterator,
@@ -1909,7 +1910,7 @@ def evaluate_and_print_results(prefix, forward_step_func,
                                   ppl, args.consumed_train_samples)
                 writer.add_scalar('{} validation ppl vs tokens'.format(key), ppl,
                                   args.consumed_train_samples * args.seq_length)
-            if wandb_writer and is_last_rank():
+            if wandb_writer and is_rank0():
                 try:
                     wandb_writer.log({
                         '{} validation'.format(key): total_loss_dict[key].item()},
@@ -1917,7 +1918,7 @@ def evaluate_and_print_results(prefix, forward_step_func,
                 except:
                     pass
                 
-    if process_non_loss_data_func is not None and writer and is_last_rank():
+    if process_non_loss_data_func is not None and writer and is_rank0():
         process_non_loss_data_func(collected_non_loss_data, iteration, writer)
 
     length = len(string) + 1

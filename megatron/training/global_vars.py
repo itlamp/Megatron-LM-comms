@@ -156,7 +156,7 @@ def _set_tensorboard_writer(args):
                                    'tensorboard writer')
 
     if hasattr(args, 'tensorboard_dir') and \
-       args.tensorboard_dir and args.rank == (args.world_size - 1):
+       args.tensorboard_dir and args.rank == 0:
         try:
             from torch.utils.tensorboard import SummaryWriter
             print('> setting tensorboard ...')
@@ -173,10 +173,10 @@ def _set_wandb_writer(args):
     global _GLOBAL_WANDB_WRITER
     _ensure_var_is_not_initialized(_GLOBAL_WANDB_WRITER,
                                    'wandb writer')
-    if getattr(args, 'wandb_project', '') and args.rank == (args.world_size - 1):
+    if getattr(args, 'wandb_project', '') and args.rank == 0: 
+        print(f'world size {args.world_size}')
         if args.wandb_exp_name == '':
             raise ValueError("Please specify the wandb experiment name!")
-
         import wandb
         if args.wandb_save_dir:
             save_dir = args.wandb_save_dir
