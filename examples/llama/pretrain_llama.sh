@@ -14,6 +14,7 @@ TRANSFORMER_IMPL=${HL_TRANSFORMER_IMPL:-transformer_engine}
 # Parallelism variables
 NUM_NODES=${HL_NUM_NODES:-1}
 ASYNCH=${HL_ASYNCH:-1} 
+LM_EVAL=${HL_LM_EVAL:-0}
 DP=${HL_DP:-2}
 TP=${HL_TP:-2}
 PP=${HL_PP:-2}
@@ -307,8 +308,15 @@ if [[ $(( NUM_LAYERS % PP )) -ne 0 ]]; then
 fi
 
 # Paths
-SRC_PATH="${MEGATRON_LM_ROOT}/pretrain_gpt.py"
-DATA_PATH=${DATA_DIR}/${DATA_FILE_PREFIX}
+if [[ "${LM_EVAL}" -eq 0 ]]; then
+    SRC_PATH="${MEGATRON_LM_ROOT}/pretrain_gpt.py"
+else
+    SRC_PATH="${MEGATRON_LM_ROOT}/tasks/lm_evaluation_harness.py"
+    NO_LOAD_OPTIM=1
+    NO_LOAD_RNG=1
+fi   
+
+DATA_PATH=${DATA_DIR}/${DATA_FILE_PREFIX} 
 
 if [[ -z "${TOKENIZER_MODEL}" ]]; then
     TOKENIZER_MODEL="${DATA_DIR}/tokenizer.model"
