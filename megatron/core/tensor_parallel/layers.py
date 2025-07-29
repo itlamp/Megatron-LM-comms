@@ -1138,7 +1138,7 @@ class RowParallelLinear(torch.nn.Module):
         p = config.asynch_p
         tp_size = get_tensor_model_parallel_world_size()
         if p != 1:
-            hidden = round(hidden*p)
+            hidden = int(hidden*p)
             self.weight.data[hidden:,:]=self.weight.data[hidden:,:]*(tp_size**(1/2))
 
         if bias:
