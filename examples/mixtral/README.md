@@ -201,7 +201,7 @@ For more information, please see [tools/checkpoint/README.md](../../tools/checkp
 # Supported Configuration
 | Validated on  | Intel Gaudi Software Version | PyTorch Version | Mode     |
 |---------------|------------------------------|-----------------|----------|
-| Gaudi 2       | 1.21.0                       | 2.6.0           | Training |
+| Gaudi 2       | 1.21.3                       | 2.6.0           | Training |
 
 # Known Issues
 * Only scripts and configurations mentioned in this README are supported and verified.

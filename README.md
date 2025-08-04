@@ -78,8 +78,8 @@ export PYTHONPATH=$MEGATRON_LM_ROOT:$PYTHONPATH
 # Supported Configurations
 | Model                                       | Mode        | Intel Gaudi software Version | PyTorch Version | Validated on Gaudi 2 | Validated on Gaudi 3 |
 | --------------------------------------------| ----------- | ---------------------------- | --------------- | -------------------- | -------------------- |
-| [LLaMA 3.1](examples/llama/README.md)       | Pretraining | 1.21.0                       | 2.6.0           | :heavy_check_mark:   | :heavy_check_mark:*  |
-| [Mixtral 8x7B](examples/mixtral/README.md)  | Pretraining | 1.21.0                       | 2.6.0           | :heavy_check_mark:** |                      |
+| [LLaMA 3.1](examples/llama/README.md)       | Pretraining | 1.21.3                       | 2.6.0           | :heavy_check_mark:   | :heavy_check_mark:*  |
+| [Mixtral 8x7B](examples/mixtral/README.md)  | Pretraining | 1.21.3                       | 2.6.0           | :heavy_check_mark:** |                      |
 
 *Sporadic numerical instability can occur when training with fp8 precision.
 

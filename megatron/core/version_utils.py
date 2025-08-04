@@ -5,7 +5,7 @@ import warnings
 
 from packaging import version
 
-CURRENTLY_VALIDATED_GAUDI_VERSION = version.parse("1.21.0")
+CURRENTLY_VALIDATED_GAUDI_VERSION = version.parse("1.21.3")
 
 
 def check_gaudi_version():
