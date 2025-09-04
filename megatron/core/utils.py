@@ -189,6 +189,11 @@ class GlobalMemoryBuffer:
         return self.buffer[(name, dtype)][0:required_len].view(*tensor_shape)
 
     def get_tensor_without_assignment(self, tensor_shape, dtype, name):
+        """
+        Returns (potentially) a sub-tensor from the self.buffer for the given shape if it exists
+        else new empty tensor with given shape, dtype, device and requires_grad as False without
+        assigning to the self.buffer
+        """
         required_len = reduce(operator.mul, tensor_shape, 1)
         if (
             self.buffer.get((name, dtype), None) is None
@@ -201,6 +206,7 @@ class GlobalMemoryBuffer:
         return self.buffer[(name, dtype)][0:required_len].view(*tensor_shape)
 
     def set_buffer(self, tensor_shape, dtype, name):
+        """Allocate and assign empty buffer if it didn't exist in self.buffer"""
         required_len = reduce(operator.mul, tensor_shape, 1)
         if (
             self.buffer.get((name, dtype), None) is None
@@ -469,7 +475,10 @@ def check_param_hashes_across_dp_replicas(
         for param_name, param in model_chunk.named_parameters():
             param_hash = torch.frombuffer(
                 array.array(
-                    'B', hashlib.sha1(param.data.to("cpu").float().numpy(force=True)).digest()
+                    'B',
+                    hashlib.sha1(
+                        param.data.to("cpu").float().numpy(force=True), usedforsecurity=False
+                    ).digest(),
                 ),
                 dtype=torch.uint8,
             )
@@ -1533,10 +1542,12 @@ def is_float8tensor(tensor: torch.Tensor) -> bool:
 
 
 def is_real_cuda_device_available():
+    """Check if a real CUDA device is available."""
     return hasattr(torch._C, "_cuda_getDeviceCount")
 
 
 def found_kill_switch(args):
+    """Check if a kill switch file exists or not."""
     if args.kill_switch_file is not None and os.path.exists(args.kill_switch_file):
         return True
     else:
@@ -1544,15 +1555,65 @@ def found_kill_switch(args):
 
 
 def is_lazy_mode():
-    lazy_mode = int(os.getenv("PT_HPU_LAZY_MODE", "1"))
-    assert 0 <= lazy_mode <= 2, f"PT_HPU_LAZY_MODE is set incorrectly"
-    return lazy_mode in (1, 2)
+    """Check if lazy mode is enabled based on the PT_HPU_LAZY_MODE environment variable."""
+    lazy_mode = int(os.getenv("PT_HPU_LAZY_MODE", "0"))
+    assert 0 <= lazy_mode <= 1, f"PT_HPU_LAZY_MODE is set incorrectly"
+    return lazy_mode == 1
+
+
+def is_custom_op():
+    """Check if custom op solution is enabled based on the PT_TE_CUSTOM_OP environment variable."""
+    is_custom_op = int(os.getenv("PT_TE_CUSTOM_OP", "0"))
+    assert 0 <= is_custom_op <= 1, f"PT_TE_CUSTOM_OP is set incorrectly"
+    return is_custom_op == 1
 
 
 def call_mark_step():
+    """
+    Mark a step in lazy mode to break the graph.
+    Breaking the graph in non-lazy mode is not enabled yet.
+    """
     if is_real_cuda_device_available():
         return
     if is_lazy_mode():
         htcore.mark_step()
     # else:
     #     torch._dynamo.graph_break()
+
+
+########################
+### context parallel ###
+########################
+
+
+def get_batch_on_this_cp_rank(batch: Dict[str, Any]):
+    """Slice batch input along sequence dimension into multiple chunks,
+    which are parallelized across GPUs in a context parallel group.
+    """
+
+    # With causal masking, each token only attends to its prior tokens. Simply split
+    # sequence into CP chunks can result in severe load imbalance. That's to say, chunks
+    # at the end of sequence have bigger workload than others. To address this issue,
+    # we split sequence into 2*CP ranks. Assuming CP=2, we then get 4 chunks, chunk_0
+    # and chunk_3 are assigned to GPU0, chunk_1 and chunk_2 are assigned to GPU1, so
+    # that we can get balanced workload among GPUs in a context parallel group.
+    cp_size = parallel_state.get_context_parallel_world_size()
+    if cp_size > 1:
+        cp_rank = parallel_state.get_context_parallel_rank()
+        for key, val in batch.items():
+            if val is not None:
+                seq_dim = 1 if key != 'attention_mask' else 2
+                val = val.view(
+                    *val.shape[0:seq_dim],
+                    2 * cp_size,
+                    val.shape[seq_dim] // (2 * cp_size),
+                    *val.shape[(seq_dim + 1) :],
+                )
+                index = torch.tensor(
+                    [cp_rank, (2 * cp_size - cp_rank - 1)], device="cpu", pin_memory=True
+                ).cuda(non_blocking=True)
+                val = val.index_select(seq_dim, index)
+                val = val.view(*val.shape[0:seq_dim], -1, *val.shape[(seq_dim + 2) :])
+                batch[key] = val
+
+    return batch

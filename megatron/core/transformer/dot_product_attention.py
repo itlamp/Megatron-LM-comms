@@ -48,6 +48,8 @@ class DotProductAttention(MegatronModule):
         attention_type: str,
         attention_dropout: float = None,
         softmax_scale: float = None,
+        k_channels: Optional[int] = None,
+        v_channels: Optional[int] = None,
         cp_comm_type: str = None,
     ):
         super().__init__(config=config)
@@ -220,13 +222,15 @@ class DotProductAttention(MegatronModule):
         return context
 
     def apply_z_loss(self, scores, mask, z=None):
-        """Encourages the SoftMax partition function Z (see below) to remain small to enhance stability.
+        """Encourages the SoftMax partition function Z (see below) to remain small to enhance
+           stability.
            SoftMax(logits)[i] = (e^logits[i]) / Z , where Z = SUM(e^logits[i])
 
         Args:
             scores (torch.Tensor): The attention logits.
             mask (torch.Tensor): The attention mask.
-            z (torch.Tensor, optional): Softmax partition function, SUM(e^logits[i]). Defaults to None.
+            z (torch.Tensor, optional): Softmax partition function, SUM(e^logits[i]). Defaults to
+            None.
 
         Returns:
             torch.Tensor: The logits after applying the z-loss.
@@ -282,6 +286,7 @@ def save_to_attention_z_loss_tracker(
 def track_attention_z_loss_metrics(
     loss_scale, iteration, writer, wandb_writer=None, total_loss_dict=None, per_layer_logging=False
 ):
+    """Track attention z_loss metrics"""
     tracker = parallel_state.get_attention_z_loss_tracker()
     aux_losses_tracker_track_metrics(
         tracker,

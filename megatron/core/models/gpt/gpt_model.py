@@ -53,6 +53,8 @@ class GPTModel(LanguageModule):
             Base period for rotary position embeddings. Ignored unless
             position_embedding_type is 'rope'.
             Defaults to 10000.
+        rope_scaling (bool, optional): Toggle RoPE scaling.
+        rope_scaling_factor (float): RoPE scaling factor. Default 8.
         scatter_embedding_sequence_parallel (bool, optional):
             Whether embeddings should be scattered across sequence parallel
             region or not. Defaults to True.
@@ -76,6 +78,7 @@ class GPTModel(LanguageModule):
         rotary_percent: float = 1.0,
         rotary_base: int = 10000,
         rope_scaling: bool = False,
+        rope_scaling_factor: float = 8.0,
         scatter_embedding_sequence_parallel: bool = True,
         seq_len_interpolation_factor: Optional[float] = None,
     ) -> None:
@@ -121,8 +124,12 @@ class GPTModel(LanguageModule):
                 seq_len_interpolation_factor=seq_len_interpolation_factor,
                 rotary_base=rotary_base,
                 rope_scaling=rope_scaling,
+                rope_scaling_factor=rope_scaling_factor,
                 use_cpu_initialization=self.config.use_cpu_initialization,
             )
+
+        # Cache for RoPE tensors which do not change between iterations.
+        self.rotary_pos_emb_cache = {}
 
         # Transformer.
         self.decoder = TransformerBlock(
@@ -227,10 +234,11 @@ class GPTModel(LanguageModule):
         rotary_pos_cos = None
         rotary_pos_sin = None
         if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
-            if not self.training and self.config.flash_decode:
+            if not self.training and self.config.flash_decode and inference_params:
                 # Flash decoding uses precomputed cos and sin for RoPE
-                rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb.get_cos_sin(
-                    inference_params.max_sequence_length
+                rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb_cache.setdefault(
+                    inference_params.max_sequence_length,
+                    self.rotary_pos_emb.get_cos_sin(inference_params.max_sequence_length),
                 )
             else:
                 rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
@@ -241,6 +249,18 @@ class GPTModel(LanguageModule):
                     packed_seq=packed_seq_params is not None
                     and packed_seq_params.qkv_format == 'thd',
                 )
+        if (
+            (self.config.enable_cuda_graph or self.config.flash_decode)
+            and rotary_pos_cos is not None
+            and inference_params
+        ):
+            sequence_len_offset = torch.tensor(
+                [inference_params.sequence_len_offset] * inference_params.current_batch_size,
+                dtype=torch.int32,
+                device=rotary_pos_cos.device,  # Co-locate this with the rotary tensors
+            )
+        else:
+            sequence_len_offset = None
 
         # Run decoder.
         hidden_states = self.decoder(
@@ -251,6 +271,7 @@ class GPTModel(LanguageModule):
             rotary_pos_cos=rotary_pos_cos,
             rotary_pos_sin=rotary_pos_sin,
             packed_seq_params=packed_seq_params,
+            sequence_len_offset=sequence_len_offset,
             **(extra_block_kwargs or {}),
         )
 

@@ -6,7 +6,7 @@ from importlib.metadata import version
 import pytest
 import torch
 
-from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_local_spec
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 
@@ -55,7 +55,7 @@ class TestParallelSequentialMLP:
             moe_router_load_balancing_type="sinkhorn",
             moe_router_topk=1,
         )
-        transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+        transformer_layer_spec = get_gpt_layer_local_spec(
             num_experts=num_moe_experts, moe_grouped_gemm=False
         )
         self.sequential_mlp = MoELayer(

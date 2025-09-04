@@ -64,7 +64,10 @@ def load_args_from_checkpoint(margs, args, use_source_margs_file=False):
             "encoder_seq_length",
             "start_weight_decay",
             "end_weight_decay",
-
+            "main_grads_dtype",
+            "main_params_dtype",
+            "exp_avg_dtype",
+            "exp_avg_sq_dtype",
         }
         with open(args.source_margs_file, "r") as f:
             src_megatron_args = json.load(f)
@@ -76,6 +79,8 @@ def load_args_from_checkpoint(margs, args, use_source_margs_file=False):
                 margs.previous_tensor_model_parallel_size = val
             if key == 'expert_tensor_parallel_size' and hasattr(margs, key):
                 margs.previous_expert_tensor_parallel_size = val
+            if key == 'expert_model_parallel_size' and hasattr(margs, key):
+                margs.previous_expert_model_parallel_size = val
 
             if key not in exclusions and hasattr(margs, key) and val != getattr(margs, key):
                 print(f"key: {key} replacing margs {getattr(margs, key)} with {val}.")
@@ -106,11 +111,11 @@ def load_args_from_checkpoint(margs, args, use_source_margs_file=False):
         margs.padded_vocab_size = mixtral_config.vocab_size
         margs.ffn_hidden_size = mixtral_config.intermediate_size
         margs.num_experts = mixtral_config.num_local_experts
-        # margs.expert_tensor_parallel_size = 1
         margs.transformer_impl = 'transformer_engine'
 
         margs.previous_tensor_model_parallel_size = 1
         margs.previous_pipeline_model_parallel_size = 1
+        margs.previous_expert_model_parallel_size = 1
         margs.previous_expert_tensor_parallel_size = 1
 
         if mixtral_config.num_key_value_heads:
@@ -168,10 +173,6 @@ def set_attn_state(args, layer, hf_layer):
 
 def set_mlp_state(args, layer, hf_layer):
     '''Set MLP params.'''
-
-    if args.moe_router_fp32:
-        layer.mlp.router.to(torch.float32)
-        hf_layer.block_sparse_moe.gate.weight.to(torch.float32)
 
     layer.mlp.router.weight.data.copy_(hf_layer.block_sparse_moe.gate.weight)
 
@@ -374,6 +375,7 @@ def _load_checkpoint(queue, args):
     md.previous_tensor_parallel_size = margs.previous_tensor_model_parallel_size
     md.previous_pipeline_parallel_size = margs.previous_pipeline_model_parallel_size
     md.previous_expert_tensor_parallel_size = margs.previous_expert_tensor_parallel_size
+    md.previous_expert_model_parallel_size = margs.previous_expert_model_parallel_size
     md.true_vocab_size = margs.vocab_size # skips padding in saver
     md.make_vocab_size_divisible_by = margs.make_vocab_size_divisible_by
     md.checkpoint_args = margs
@@ -382,7 +384,6 @@ def _load_checkpoint(queue, args):
     md.num_experts = margs.num_experts
     md.moe_capacity_bins_num = margs.moe_capacity_bins_num
     md.qkv_bias = margs.add_qkv_bias
-    md.moe_router_fp32 = margs.moe_router_fp32
 
     # Get first pipe stage.
     mpu.set_tensor_model_parallel_rank(0)

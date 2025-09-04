@@ -99,23 +99,6 @@ def _gather_along_last_dim(input_):
     return output
 
 
-def _max_reduce_along_gather_last_dim(input_):
-    """
-    Perform max-reduce on the last dimension of the input tensor across distributed ranks.
-
-    Args:
-        input_ (torch.Tensor): Input tensor of shape [..., d].
-
-    Returns:
-        torch.Tensor: Tensor with max-reduced last dimension.
-    """
-    gathered_tensor = _gather_along_last_dim(input_)
-    # Perform max-reduce along the last dimension
-    reduced_tensor, _ = torch.max(gathered_tensor, keepdim=True, dim=-1)
-
-    return reduced_tensor
-
-
 def _reduce_scatter_along_last_dim(input_):
     """Reduce-scatter tensors on the last dimension."""
     world_size = get_tensor_model_parallel_world_size()

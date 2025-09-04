@@ -1,7 +1,7 @@
 # LLaMa for PyTorch
 
 This directory provides examples of the GPT-based LLaMa models training in the Megatron-LM repository on Intel® Gaudi® 2 & Gaudi® 3 AI accelerators.
-Before you get started, make sure to review the [Supported Configuration](../../README.md#supported-configuration).
+Before you get started, make sure to review the [Supported Configurations](../../README.md#supported-configurations).
 
 ## Table of Contents
 * [Setup](#setup)
@@ -190,6 +190,10 @@ These are system specific settings. Use these parameters for efficient allocatio
   HL_USE_LAZY_MODE=0
   HL_TORCH_COMPILE_DISABLE=1
   ```
+* [Scale-out via Host NIC over OFI](https://docs.habana.ai/en/latest/API_Reference_Guides/HCCL_APIs/Scale_Out_via_Host_NIC.html)
+  ``
+  HL_HNIC=1
+  ```
 
 Note: For the training commands, make sure to change the IP addresses in hostsfile according to your setup.
 `HL_RESULTS_DIR` and `HL_DATA_DIR_ROOT` must be shared writable across all nodes and launchers when running training on more than 8 cards.
@@ -363,4 +367,3 @@ Note: `HL_USE_LAZY_MODE=0` will run in mixed mode with eager and compile due to 
 
 # Known Issues
 * Only scripts and configurations mentioned in this README are supported and verified.
-* Sporadic NaN in loss can occur when training with fp8 precision. In such case, it is suggested to resume training from the last saved checkpoint.

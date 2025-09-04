@@ -1,4 +1,3 @@
-import pytest
 import torch
 from pytest_mock import mocker
 
@@ -55,7 +54,6 @@ class TestTRTLLMDistributedGPUConverter:
         """
         Utils.destroy_model_parallel()
 
-    @pytest.mark.flaky_in_dev
     def test_get_model_weights_converter(self, mocker):
         """
         test model weights onverter

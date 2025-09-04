@@ -1,16 +1,17 @@
 # Copyright (C) 2025 Intel Corporation
 
-import subprocess
+import subprocess  # nosec
 import warnings
 
 from packaging import version
 
-CURRENTLY_VALIDATED_GAUDI_VERSION = version.parse("1.21.3")
+CURRENTLY_VALIDATED_GAUDI_VERSION = version.parse("1.22.0")
 
 
 def check_gaudi_version():
     """
-    Checks whether the versions of Gaudi and drivers have been validated for the current version of Megatron-LM.
+    Checks whether the versions of Gaudi and drivers have been validated
+    for the current version of Megatron-LM.
     """
     # Check the version of habana_frameworks
     habana_frameworks_version_number = get_habana_frameworks_version()
@@ -19,7 +20,9 @@ def check_gaudi_version():
         or habana_frameworks_version_number.minor != CURRENTLY_VALIDATED_GAUDI_VERSION.minor
     ):
         warnings.warn(
-            f"Megatron-LM v{CURRENTLY_VALIDATED_GAUDI_VERSION} has been validated for Gaudi v{CURRENTLY_VALIDATED_GAUDI_VERSION} but habana-frameworks v{habana_frameworks_version_number} was found, this could lead to undefined behavior!"
+            f"Megatron-LM v{CURRENTLY_VALIDATED_GAUDI_VERSION} has been validated for Gaudi \
+            v{CURRENTLY_VALIDATED_GAUDI_VERSION} but habana-frameworks \
+            v{habana_frameworks_version_number} was found, this could lead to undefined behavior!"
         )
 
     # Check driver version
@@ -32,25 +35,50 @@ def check_gaudi_version():
             or driver_version.minor != CURRENTLY_VALIDATED_GAUDI_VERSION.minor
         ):
             warnings.warn(
-                f"Megatron-LM v{CURRENTLY_VALIDATED_GAUDI_VERSION} has been validated for Gaudi v{CURRENTLY_VALIDATED_GAUDI_VERSION} but the driver version is v{driver_version}, this could lead to undefined behavior!"
+                f"Megatron-LM v{CURRENTLY_VALIDATED_GAUDI_VERSION} has been validated for Gaudi \
+                v{CURRENTLY_VALIDATED_GAUDI_VERSION} but the driver version is v{driver_version}, \
+                this could lead to undefined behavior!"
             )
     else:
         warnings.warn(
-            "Could not run `hl-smi`, please follow the installation guide: https://docs.habana.ai/en/latest/Installation_Guide/index.html."
+            "Could not run `hl-smi`, please follow the installation guide: \
+            https://docs.habana.ai/en/latest/Installation_Guide/index.html."
         )
 
 
 def get_habana_frameworks_version():
     """
-    Returns the installed version of Gaudi.
+    Returns the installed version of habana-torch-plugin.
+    """
+    pip_process = subprocess.Popen(['pip', 'list'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    grep_process = subprocess.Popen(
+        ['grep', 'habana-torch-plugin'],
+        stdin=pip_process.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    # Get the output
+    output, _ = grep_process.communicate()
+    if not output:
+        return version.parse("0.0.0.0")
+    return version.parse(output.decode().split("\n")[0].split()[-1])
+
+
+def get_intel_transformer_engine_version():
+    """
+    Returns the installed version of intel_transformer_engine.
     """
     output = subprocess.run(
-        "pip list | grep habana-torch-plugin",
+        "pip list | grep intel_transformer_engine",
         shell=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if not output.stdout:
+        return version.parse("0.0.0.0")
     return version.parse(output.stdout.split("\n")[0].split()[-1])
 
 
@@ -61,7 +89,6 @@ def get_driver_version():
     # Enable console printing for `hl-smi` check
     output = subprocess.run(
         "hl-smi",
-        shell=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -76,9 +103,21 @@ def get_driver_version():
 
 def is_habana_frameworks_min_version(min_version):
     """
-    Checks if the installed version of `habana_frameworks` is larger than or equal to `min_version`.
+    Checks if the installed version of `habana_frameworks` is larger than or equal to
+    `min_version`.
     """
     if get_habana_frameworks_version() < version.parse(min_version):
+        return False
+    else:
+        return True
+
+
+def is_ite_min_version(min_version):
+    """
+    Checks if the installed version of `intel_transformer_engine` is larger than or equal to
+    `min_version`.
+    """
+    if get_intel_transformer_engine_version() < version.parse(min_version):
         return False
     else:
         return True
@@ -90,4 +129,13 @@ def is_habana_frameworks_version(req_version):
     """
     return (get_habana_frameworks_version().major == version.parse(req_version).major) and (
         get_habana_frameworks_version().minor == version.parse(req_version).minor
+    )
+
+
+def is_ite_version(req_version):
+    """
+    Checks if the installed version of `intel_transformer_engine` is equal to `req_version`.
+    """
+    return (get_intel_transformer_engine_version().major == version.parse(req_version).major) and (
+        get_intel_transformer_engine_version().minor == version.parse(req_version).minor
     )

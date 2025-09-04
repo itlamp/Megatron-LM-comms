@@ -23,12 +23,10 @@ except:
     HAVE_TE = False
 
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-from megatron.core.fusions.fused_dot_product_attention import FusedDotProductAttention
 from megatron.core.ssm.mamba_block import MambaStack, MambaStackSubmodules
 from megatron.core.ssm.mamba_layer import MambaLayer, MambaLayerSubmodules
 from megatron.core.ssm.mamba_mixer import MambaMixer, MambaMixerSubmodules
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
-from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
@@ -38,16 +36,7 @@ from megatron.core.transformer.transformer_layer import TransformerLayer, Transf
 if HAVE_TE:
     core_attention_class = TEDotProductAttention
 else:
-    from intel_transformer_engine.utils import is_gaudi3
-
-    enable_fsdpa = False
-    cp_enabled = False
-    if (is_gaudi3() or cp_enabled) and enable_fsdpa:
-        core_attention_class = IntelTEDotProductAttention
-    elif enable_fsdpa:
-        core_attention_class = FusedDotProductAttention
-    else:
-        core_attention_class = DotProductAttention
+    core_attention_class = IntelTEDotProductAttention
 
 mamba_stack_spec = ModuleSpec(
     module=MambaStack,

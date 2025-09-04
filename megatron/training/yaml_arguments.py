@@ -1,3 +1,4 @@
+# Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 """Megatron arguments."""
@@ -59,7 +60,7 @@ def validate_yaml(args, defaults={}):
         (args.world_size // args.model_parallel.tensor_model_parallel_size))
     args.model_parallel.transformer_pipeline_model_parallel_size = (
         args.model_parallel.pipeline_model_parallel_size - 1
-        if args.standalone_embedding_stage else
+        if args.account_for_embedding_in_pipeline_split else
         args.model_parallel.pipeline_model_parallel_size
     )
     # Checks.
@@ -449,7 +450,7 @@ def core_transformer_config_from_yaml(args, transfomer_key = "language_model"):
 def load_yaml(yaml_path):
     print(f"warning using experimental yaml arguments feature, argparse arguments will be ignored")
     with open(yaml_path, "r") as f:
-        config = yaml.load(f,Loader=yaml.FullLoader)
+        config = yaml.safe_load(f,Loader=yaml.FullLoader)
         # Convert to nested namespace
         config_namespace = json.loads(json.dumps(config), object_hook=lambda item: SimpleNamespace(**item))
         # Add config location to namespace

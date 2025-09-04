@@ -1,7 +1,8 @@
+# Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 import os
-import random
+import secrets
 import sys
 import tempfile
 
@@ -26,7 +27,9 @@ def dummy_img(odir_txt, odir_img):
                 os.path.join(odir_img, os.path.splitext(name)[0], f"{str(i).zfill(4)}.img"), "wb"
             ) as writer_img:
                 # 32 * 32 - 1 to induce preprocessing 0-index padding
-                writer_img.write(bytes([random.randint(0, 255) for _ in range(32 * 32 - 1)]))
+                writer_img.write(
+                    bytes([secrets.SystemRandom().randint(0, 255) for _ in range(32 * 32 - 1)])
+                )
 
 
 def build_datasets(idir_txt, idir_img, odir, extra_args=[]):

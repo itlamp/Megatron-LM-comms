@@ -1,13 +1,12 @@
-# Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import filecmp
 import os
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
+from megatron.training.arguments import parse_args
 from megatron.training.checkpointing import (
     _NON_PERSISTENT_CKPT_SUBDIR,
     load_checkpoint,
@@ -30,15 +29,13 @@ class TestNonPersistentSaveAndLoad:
         Utils.destroy_model_parallel()
 
     @pytest.mark.parametrize(('tp,pp'), [(2, 4)])
-    @pytest.mark.flaky_in_dev
     def test_basic_save_load_scenarios(self, tmp_path_dist_ckpt, tp, pp):
         Utils.initialize_model_parallel(tp, pp)
         num_floating_point_operations_so_far = 0
         model, optimizer = setup_model_and_optimizer(1, tp, pp)
         opt_param_scheduler = None
 
-        mock_args = SimpleNamespace()
-        mock_args.verify_checkpoint = False
+        mock_args = parse_args(ignore_unknown_args=True)
         with TempNamedDir(
             tmp_path_dist_ckpt / "test_non_persistent"
         ) as non_persistent_ckpt_dir, mock.patch(
@@ -126,8 +123,7 @@ class TestLegacySaveAndLoad:
         model, optimizer = setup_model_and_optimizer(1, tp, pp)
         opt_param_scheduler = None
 
-        mock_args = SimpleNamespace()
-        mock_args.verify_checkpoint = False
+        mock_args = parse_args(ignore_unknown_args=True)
         with TempNamedDir(tmp_path_dist_ckpt / "test_legacy") as legacy_ckpt_dir, mock.patch(
             'megatron.training.checkpointing.get_args', new=lambda: mock_args
         ), mock.patch("megatron.training.checkpointing.update_num_microbatches"):

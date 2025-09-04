@@ -7,20 +7,18 @@
 # and is subject to the confidentiality and license agreements under which it
 # was provided.
 
-from contextlib import nullcontext
 from typing import Callable, Optional
 
-import torch
-import torch.distributed as dist
 from torch import Tensor
 
 from megatron.core import ModelParallelConfig, parallel_state
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import (
-    get_context_parallel_global_ranks,
-    get_context_parallel_group,
+    get_expert_tensor_parallel_group,
+    get_expert_tensor_parallel_world_size,
     get_tensor_model_parallel_group,
+    get_tensor_model_parallel_world_size,
 )
 from megatron.core.tensor_parallel import get_cuda_rng_tracker, get_expert_parallel_rng_tracker_name
 from megatron.core.transformer.enums import AttnMaskType
@@ -31,7 +29,7 @@ from megatron.core.utils import divide
 from megatron.core.version_utils import is_habana_frameworks_min_version
 
 try:
-    import apex
+    import apex  # pylint: disable=unused-import
 
     from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
 
@@ -54,6 +52,18 @@ except:
 
 
 def condition_init_method(config, init_method):
+    """
+    Conditionally applies an initialization method to weights based on configuration.
+
+    Args:
+        config: A configuration object containing a boolean attribute 'perform_initialization'
+               that determines whether initialization should be performed.
+        init_method: A callable that initializes weights when applied to them.
+
+    Returns:
+        If config.perform_initialization is True, returns the provided init_method.
+        Otherwise, returns a no-op function that does nothing when applied to weights.
+    """
     return init_method if config.perform_initialization else (lambda w: None)
 
 
@@ -101,14 +111,16 @@ class IntelTELinear(te.Linear):
         input_size: int,
         output_size: int,
         *,
-        parallel_mode: str,
+        parallel_mode: Optional[str],
         config: ModelParallelConfig,
         init_method: Callable,
         bias: bool,
         skip_bias_add: bool,
         skip_weight_param_allocation: bool,
-        tp_comm_buffer_name: str = None,
+        tp_comm_buffer_name: Optional[str] = None,
         force_disable_fp8: bool = False,
+        is_expert: bool = False,
+        use_fp8_smooth_swiglu: bool = False,
     ):
         self.config = config
 
@@ -130,12 +142,39 @@ class IntelTELinear(te.Linear):
 
         extra_kwargs = _get_extra_te_kwargs(config)
 
+        self.expert_parallel = self.config.expert_model_parallel_size > 1
+        if is_expert:
+            rng_tracker_name = get_expert_parallel_rng_tracker_name()
+        else:
+            rng_tracker_name = None
+        if is_habana_frameworks_min_version("1.21.0.438"):
+            extra_kwargs["rng_tracker_name"] = rng_tracker_name
+        if is_habana_frameworks_min_version("1.22.0"):
+            extra_kwargs["use_fp8_smooth_swiglu"] = use_fp8_smooth_swiglu
+
+        # Disable communications in TE when using SP or EP by making TE agnostic of model parallel.
+        if is_expert:
+            tp_group = get_expert_tensor_parallel_group(check_initialized=False)
+            tp_size = get_expert_tensor_parallel_world_size()
+        else:
+            tp_group = get_tensor_model_parallel_group(check_initialized=False)
+            tp_size = get_tensor_model_parallel_world_size()
+        explicit_expert_comm = is_expert and (tp_size > 1 or self.expert_parallel)
+        if explicit_expert_comm:
+            if parallel_mode == "column":
+                output_size = divide(output_size, tp_size)
+            elif parallel_mode == "row":
+                input_size = divide(input_size, tp_size)
+            # Nvidia sets `tp_group` to `None`, we need it for amax reduction,
+            # hence we leave it unchanged.
+            parallel_mode = None
+
         super().__init__(
             in_features=input_size,
             out_features=output_size,
             sequence_parallel=self.config.sequence_parallel,
-            tp_group=get_tensor_model_parallel_group(check_initialized=False),
-            tp_size=self.config.tensor_model_parallel_size,
+            tp_group=tp_group,
+            tp_size=tp_size,
             get_rng_state_tracker=(
                 get_cuda_rng_tracker if get_cuda_rng_tracker().is_initialized() else None
             ),
@@ -147,10 +186,16 @@ class IntelTELinear(te.Linear):
             **extra_kwargs,
         )
 
+        for param in self.parameters():
+            setattr(param, 'allreduce', not (is_expert and self.expert_parallel))
+
+    # pylint: disable=missing-function-docstring
     def forward(self, x):
         _is_first_microbatch = self.is_first_microbatch
-        ctx = te.fp8_autocast(enabled=False) if self.force_disable_fp8 else nullcontext()
-        with ctx:
+        if self.force_disable_fp8:
+            with te.fp8_autocast(enabled=False):
+                out = super().forward(x, is_first_microbatch=_is_first_microbatch)
+        else:
             out = super().forward(x, is_first_microbatch=_is_first_microbatch)
         if self.is_first_microbatch:
             self.is_first_microbatch = False
@@ -181,7 +226,7 @@ class IntelTEColumnParallelLinear(IntelTELinear):
         skip_bias_add: bool,
         is_expert: bool,
         skip_weight_param_allocation: bool = False,
-        tp_comm_buffer_name: str = None,
+        tp_comm_buffer_name: Optional[str] = None,
     ):
         if gather_output:
             raise ValueError('Transformer Engine linear layers do not support gather_output = True')
@@ -195,6 +240,7 @@ class IntelTEColumnParallelLinear(IntelTELinear):
             bias=bias,
             skip_bias_add=skip_bias_add,
             skip_weight_param_allocation=skip_weight_param_allocation,
+            is_expert=is_expert,
         )
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
@@ -222,7 +268,7 @@ class IntelTERowParallelLinear(IntelTELinear):
         input_is_parallel: bool,
         skip_bias_add: bool,
         is_expert: bool,
-        tp_comm_buffer_name: str = None,
+        tp_comm_buffer_name: Optional[str] = None,
         **kwargs,
     ):
         if not input_is_parallel:
@@ -238,7 +284,8 @@ class IntelTERowParallelLinear(IntelTELinear):
             init_method=condition_init_method(config, init_method),
             bias=bias,
             skip_bias_add=skip_bias_add,
-            skip_weight_param_allocation=False,  # We don't currently use this for row parallel layers
+            skip_weight_param_allocation=False,  # We don't currently use it for row parallel layers
+            is_expert=is_expert,
             **kwargs,
         )
 
@@ -262,7 +309,25 @@ class IntelTERowParallelLinearFp8Disabled(IntelTERowParallelLinear):
         )
 
 
-if is_habana_frameworks_min_version("1.21.0"):
+if is_habana_frameworks_min_version("1.22.0"):
+
+    class IntelTERowParallelLinearFP8SmoothSwiglu(IntelTERowParallelLinear):
+        """
+        Wrapper for the Transformer-Engine's `Linear` layer but specialized similar
+        to megatron's `RowParallelLinear` layer and FP8 Smooth SwiGLU
+        https://arxiv.org/pdf/2409.12517.
+        """
+
+        def __init__(self, input_size: int, output_size: int, **kwargs):
+            super().__init__(
+                input_size=input_size, output_size=output_size, **kwargs, use_fp8_smooth_swiglu=True
+            )
+
+else:
+    IntelTERowParallelLinearFP8SmoothSwiglu = None
+
+
+if is_habana_frameworks_min_version("1.21.0.399"):
 
     class IntelTEGroupedLinear(te.GroupedLinear):
         """
@@ -279,13 +344,13 @@ if is_habana_frameworks_min_version("1.21.0"):
             input_size: int,
             output_size: int,
             *,
-            parallel_mode: str,
+            parallel_mode: Optional[str],
             config: ModelParallelConfig,
             init_method: Callable,
             bias: bool,
             skip_bias_add: bool,
             is_expert: bool = False,
-            tp_comm_buffer_name: str = None,
+            tp_comm_buffer_name: Optional[str] = None,
             force_disable_fp8=False,
         ):
             self.config = config
@@ -308,14 +373,14 @@ if is_habana_frameworks_min_version("1.21.0"):
 
             # For MoE models, the comms between TP and EP group is explicitly handled by
             # MoE token dispatcher. So we disable comms by making TE agnostic of model parallel.
-            self.explicit_expert_comm = is_expert and (
-                config.tensor_model_parallel_size > 1 or self.expert_parallel
-            )
-            tp_group = get_tensor_model_parallel_group(check_initialized=False)
-            if self.explicit_expert_comm and config.expert_tensor_parallel_size > 1:
-                tp_size = parallel_state.get_expert_tensor_and_model_parallel_world_size()
+            if is_expert:
+                tp_group = get_expert_tensor_parallel_group(check_initialized=False)
+                tp_size = get_expert_tensor_parallel_world_size()
             else:
-                tp_size = parallel_state.get_tensor_model_parallel_world_size()
+                tp_group = get_tensor_model_parallel_group(check_initialized=False)
+                tp_size = get_tensor_model_parallel_world_size()
+            self.explicit_expert_comm = is_expert and (tp_size > 1 or self.expert_parallel)
+
             if self.explicit_expert_comm:
                 # Nvidia sets `tp_group` to `None`, we need it for amax reduction,
                 # hence we leave it unchanged.
@@ -345,10 +410,13 @@ if is_habana_frameworks_min_version("1.21.0"):
             for param in self.parameters():
                 setattr(param, 'allreduce', not (is_expert and self.expert_parallel))
 
+        # pylint: disable=missing-function-docstring
         def forward(self, x, m_splits):
             _is_first_microbatch = self.is_first_microbatch
-            ctx = te.fp8_autocast(enabled=False) if self.force_disable_fp8 else nullcontext()
-            with ctx:
+            if self.force_disable_fp8:
+                with te.fp8_autocast(enabled=False):
+                    out = super().forward(x, m_splits, is_first_microbatch=_is_first_microbatch)
+            else:
                 out = super().forward(x, m_splits, is_first_microbatch=_is_first_microbatch)
             self.is_first_microbatch = False
 
@@ -412,7 +480,7 @@ if is_habana_frameworks_min_version("1.21.0"):
                 ), f'Expected replica_id for {k} to be in (PP, TP, DP) format, got: {replica_id}'
                 sh_ten.replica_id = (
                     *replica_id[:2],
-                    parallel_state.get_data_modulo_expert_parallel_rank(),
+                    parallel_state.get_expert_data_parallel_rank(),
                 )
             return sharded_state_dict
 
@@ -433,7 +501,7 @@ if is_habana_frameworks_min_version("1.21.0"):
             bias: bool,
             skip_bias_add: bool,
             is_expert: bool,
-            tp_comm_buffer_name: str = None,
+            tp_comm_buffer_name: Optional[str] = None,
             force_disable_fp8=False,
         ):
 
@@ -525,7 +593,7 @@ if is_habana_frameworks_min_version("1.21.0"):
             bias: bool,
             skip_bias_add: bool,
             is_expert: bool,
-            tp_comm_buffer_name: str = None,
+            tp_comm_buffer_name: Optional[str] = None,
         ):
             super().__init__(
                 num_gemms=num_gemms,
@@ -562,7 +630,11 @@ class IntelTEDotProductAttention(te.FusedAttention):
         layer_number: int,
         attn_mask_type: AttnMaskType,
         attention_type: str,
-        attention_dropout: float = None,
+        attention_dropout: Optional[float] = None,
+        softmax_scale: Optional[float] = None,
+        k_channels: Optional[int] = None,
+        v_channels: Optional[int] = None,
+        cp_comm_type: str = "p2p",
         force_disable_fp8=not is_gaudi3(),
     ):
         self.config = config
@@ -578,7 +650,7 @@ class IntelTEDotProductAttention(te.FusedAttention):
         self.hidden_size_per_partition = divide(projection_size, world_size)
 
         super().__init__(
-            scale=None,
+            scale=softmax_scale,
             attention_dropout=attention_dropout if attention_dropout is not None else 0.0,
             enable_recompute=self.config.use_fused_sdpa_with_recompute,
             cp_group=parallel_state.get_context_parallel_group(check_initialized=False),
@@ -587,6 +659,7 @@ class IntelTEDotProductAttention(te.FusedAttention):
             ),
         )
 
+    # pylint: disable=missing-function-docstring
     def forward(
         self,
         query: Tensor,
@@ -607,8 +680,10 @@ class IntelTEDotProductAttention(te.FusedAttention):
         causal = attn_mask_type == AttnMaskType.causal
         attn_mask = None if causal else attention_mask
 
-        ctx = te.fp8_autocast(enabled=False) if self.force_disable_fp8 else nullcontext()
-        with ctx:
+        if self.force_disable_fp8:
+            with te.fp8_autocast(enabled=False):
+                context_layer = super().forward(q, k, v, attn_mask, causal, self.use_fast_softmax)
+        else:
             context_layer = super().forward(q, k, v, attn_mask, causal, self.use_fast_softmax)
 
         # [b, np, sq, hn] --> [sq, b, np, hn]

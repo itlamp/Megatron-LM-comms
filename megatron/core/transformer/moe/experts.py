@@ -2,6 +2,7 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import itertools
+import re
 from copy import deepcopy
 from functools import partial, wraps
 from math import ceil
@@ -34,7 +35,11 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.moe import grouped_gemm_util as gg
 from megatron.core.transformer.spec_utils import build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.utils import make_sharded_object_for_checkpoint
+from megatron.core.transformer.utils import (
+    make_sharded_object_for_checkpoint,
+    make_sharded_tensors_for_checkpoint,
+    sharded_state_dict_default,
+)
 
 try:
 
@@ -370,6 +375,7 @@ class GroupedMLP(MegatronModule):
                         v_tensors = []
                         w_lens = []
                         v_lens = []
+                        expert_global_idx = local_expert_indices_offset + local_expert_idx
                         for input_dim_idx in range(self.config.hidden_size):
                             for glu_idx in range(2):
                                 local_idx = (
@@ -400,9 +406,6 @@ class GroupedMLP(MegatronModule):
                                         == local_flattened_range.stop - local_flattened_range.start
                                     )
                                     start_pos += len(local_tensor)
-                                    expert_global_idx = (
-                                        local_expert_indices_offset + local_expert_idx
-                                    )
                                     if glu_idx == 0:
                                         w_tensors.append(local_tensor)
                                         w_lens.append(len(local_tensor))
@@ -720,7 +723,7 @@ class TEGroupedMLP(MegatronModule):
         """
         sharded_state_dict = {}
         for name, module in self._modules.items():
-            sub_sd = module.sharded_state_dict(f'{name}.', sharded_offsets, metadata)
+            sub_sd = sharded_state_dict_default(module, f'{name}.', sharded_offsets, metadata)
             if name == 'linear_fc1' and self.config.gated_linear_unit:
                 num_global_experts = (
                     parallel_state.get_expert_model_parallel_world_size() * self.num_local_experts
@@ -857,7 +860,9 @@ class SequentialMLP(MegatronModule):
 class IntelDynamicMLP(MegatronModule):
     """An efficient implementation of the Experts layer using Synapse Fused MoE kernel.
 
-    This class is designed to execute multiple experts in parallel, thereby maximizing computational efficiency. It can process expert FFN with 2 (default) or 3 separate weight tensors and different activation functions: silu, gelu, relu.
+    This class is designed to execute multiple experts in parallel, thereby maximizing
+    computational efficiency. It can process expert FFN with 2 (default) or 3 separate
+    weight tensors and different activation functions: silu, gelu, relu.
     """
 
     def __init__(self, num_local_experts: int, config: TransformerConfig):
@@ -881,9 +886,10 @@ class IntelDynamicMLP(MegatronModule):
         assert self.num_local_experts == len(
             self.local_expert_indices
         ), f"[ep={self.ep_rank}, tp={self.tp_rank}] local expert indices mismatch"
-        assert (
-            not self.config.add_bias_linear
-        ), "bias in the expert layer is not supported in IntelDynamicMLP yet, please set '--disable-bias-linear' instead."
+        assert not self.config.add_bias_linear, (
+            "bias in the expert layer is not supported in IntelDynamicMLP yet, please set"
+            " '--disable-bias-linear' instead."
+        )
         assert not self.config.fp8, "FP8 is not supported in IntelDynamicMLP yet."
 
         self.permuted_weights = config.moe_permuted_weights  # HPU default is True
@@ -898,7 +904,8 @@ class IntelDynamicMLP(MegatronModule):
             self.activation_fn = 'gelu'
         else:
             raise ValueError(
-                f"IntelDynamicMLP activation function supported: ['silu', 'gelu', 'relu'], got: {self.config.activation_func}"
+                f"IntelDynamicMLP activation function supported: ['silu', 'gelu', 'relu'],"
+                " got: {self.config.activation_func}"
             )
 
         fc1_output_size = self.config.ffn_hidden_size * self.num_local_experts
@@ -988,7 +995,7 @@ class IntelDynamicMLP(MegatronModule):
     def forward(
         self, hidden_states: torch.Tensor, router_weights: torch.Tensor, indices: torch.Tensor
     ):
-
+        """Forward step of the IntelDynamicMLP."""
         hidden_states = hidden_states.view(-1, hidden_states.size(-1))
 
         output = torch.ops.hpu.mixture_of_experts(
@@ -1013,7 +1020,7 @@ class IntelDynamicMLP(MegatronModule):
         label: str,
         use_output_layer_init_method: bool,
     ) -> torch.Tensor:
-
+        """Initializes weights of the MoE layers."""
         device = (
             torch.device('cpu')
             if self.config.use_cpu_initialization
@@ -1078,3 +1085,71 @@ class IntelDynamicMLP(MegatronModule):
         setattr(weight, 'allreduce', not self.expert_parallel)
 
         return weight
+
+    @expert_dist_ckpt_decorator
+    def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
+        """Maps local expert to global experts."""
+        sharded_state_dict = {}
+        num_global_experts = (
+            parallel_state.get_expert_model_parallel_world_size() * self.num_local_experts
+        )
+
+        state_dict = self.state_dict(prefix=prefix, keep_vars=True)
+
+        # Example: "decoder.layers.0.mlp.experts.local_expert_0_linear_fc1_weight"
+        layer_re = re.compile(r"([a-z0-9_.]+)\.local_expert_(\d+)\_([a-z0-9_.]+)\_([a-z]+)")
+
+        for key, val in state_dict.items():
+            match = layer_re.match(key)
+            expert_global_idx = int(match.group(2))
+            linear = match.group(3)
+            weight_or_bias = match.group(4)
+
+            expert_sharded_offsets = (
+                *sharded_offsets,
+                (len(sharded_offsets), expert_global_idx, num_global_experts),
+            )
+            tensor_prefix = f"{key.replace(weight_or_bias, '')}"
+
+            if linear in ('linear_fc1', 'linear_fc11', 'linear_fc12'):
+                layer_state_dict = make_sharded_tensors_for_checkpoint(
+                    {weight_or_bias: val},
+                    tensor_prefix,
+                    {'weight': 0, 'bias': 0},
+                    expert_sharded_offsets,
+                )
+
+                layer_state_dict[key] = apply_swiglu_sharded_factory(
+                    layer_state_dict[key], expert_sharded_offsets
+                )
+            elif linear == 'linear_fc2':
+                layer_state_dict = make_sharded_tensors_for_checkpoint(
+                    {weight_or_bias: val}, tensor_prefix, {'weight': 1}, expert_sharded_offsets
+                )
+            else:
+                raise ValueError(
+                    "Linear name other than linear_fc1* or linear_fc2 is not supported."
+                )
+
+            expert_sharded_prefix = f'{prefix}experts.'
+            expert_state_dict_prefix = f'{prefix}local_expert_{expert_global_idx}_'
+
+            # Remove expert layers indexing from sharded keys
+            replace_prefix_for_sharding(
+                layer_state_dict, expert_state_dict_prefix, expert_sharded_prefix
+            )
+
+            # Adjust replica ids - replication along DP modulo EP
+            for k, sh_ten in layer_state_dict.items():
+                replica_id = sh_ten.replica_id
+                assert (
+                    len(replica_id) == 3
+                ), f'Expected replica_id for {k} to be in (PP, TP, DP) format, got: {replica_id}'
+                sh_ten.replica_id = (
+                    *replica_id[:2],
+                    parallel_state.get_expert_data_parallel_rank(),
+                )
+
+            sharded_state_dict.update(layer_state_dict)
+
+        return sharded_state_dict

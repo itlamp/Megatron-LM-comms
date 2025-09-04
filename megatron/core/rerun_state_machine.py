@@ -1,3 +1,4 @@
+# Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 import inspect
@@ -5,6 +6,7 @@ import logging
 import math
 import os
 import random
+import secrets
 from collections import defaultdict
 from enum import Enum
 from typing import Any, Callable, Iterable, NamedTuple, Optional, Set, Tuple, Union
@@ -255,8 +257,8 @@ class RerunStateMachine:
                 self.state = RerunState.INITIAL_RUN
                 return True
             if self.data_iterator_checkpoints is not None:
-                assert (
-                    len(self.data_iterator_checkpoints) == len(data_iterators),
+                assert len(self.data_iterator_checkpoints) == len(
+                    data_iterators
                 ), "data iterator has different length than checkpointed data iterator"
                 for i, d in enumerate(data_iterators):
                     d.load_state_dict(self.data_iterator_checkpoints[i])
@@ -734,8 +736,8 @@ class RerunStateMachine:
             data_iterators = data_iterator
         data_iterators = [d for d in data_iterators if d is not None]
         for d in data_iterators:
-            assert (
-                isinstance(d, RerunDataIterator),
+            assert isinstance(
+                d, RerunDataIterator
             ), "data iterator is not wrapped with RerunDataIterator"
         return data_iterators
 
@@ -998,7 +1000,7 @@ class RerunErrorInjector:
         if not self.should_inject_errors or self.injected_error_type is not None:
             return False
         r: int = (
-            random.randint(0, self.error_injection_rate - 1) + _safe_get_rank()
+            secrets.SystemRandom().randint(0, self.error_injection_rate - 1) + _safe_get_rank()
         ) % self.error_injection_rate
         if r != 0:
             return False

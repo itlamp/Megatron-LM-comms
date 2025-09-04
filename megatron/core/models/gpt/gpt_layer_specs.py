@@ -1,18 +1,18 @@
 # © 2024-2025 Intel Corporation
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
+import warnings
 from typing import Optional
 
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add, get_bias_dropout_norm_add
 from megatron.core.fusions.fused_dot_product_attention import FusedDotProductAttention
+from megatron.core.models.gpt.moe_module_specs import get_moe_module_spec
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
-from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
-from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
 from megatron.core.transformer.multi_latent_attention import (
     MLASelfAttention,
     MLASelfAttentionSubmodules,
@@ -24,32 +24,32 @@ from megatron.core.transformer.transformer_block import (
     get_num_layers_to_build,
 )
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
+from megatron.core.transformer.transformer_layer import (
+    TransformerLayer,
+    TransformerLayerSubmodules,
+    get_transformer_layer_offset,
+)
 from megatron.core.utils import is_real_cuda_device_available, is_te_min_version
 from megatron.core.version_utils import is_habana_frameworks_min_version
 
 try:
     from megatron.core.extensions.intel_transformer_engine import (
-        IntelTEColumnParallelGroupedLinear,
         IntelTEColumnParallelLinear,
         IntelTEDotProductAttention,
         IntelTENorm,
-        IntelTERowParallelGroupedLinear,
-        IntelTERowParallelGroupedLinearFP8Disabled,
         IntelTERowParallelLinear,
         IntelTERowParallelLinearFp8Disabled,
+        IntelTERowParallelLinearFP8SmoothSwiglu,
     )
 except:
     pass
 
 try:
     from megatron.core.extensions.transformer_engine import (
-        TEColumnParallelGroupedLinear,
         TEColumnParallelLinear,
         TEDotProductAttention,
         TELayerNormColumnParallelLinear,
         TENorm,
-        TERowParallelGroupedLinear,
         TERowParallelLinear,
     )
 
@@ -65,8 +65,6 @@ try:
     HAVE_APEX = True
     LNImpl = FusedLayerNorm
 except ImportError:
-    import warnings
-
     from megatron.core.transformer.torch_norm import WrappedTorchNorm
 
     warnings.warn('Apex is not installed. Falling back to Torch Norm')
@@ -79,8 +77,11 @@ def get_gpt_layer_with_transformer_engine_spec(
     qk_layernorm: Optional[bool] = False,
     multi_latent_attention: Optional[bool] = False,
     fp8: Optional[str] = None,
+    moe_use_legacy_grouped_gemm: Optional[bool] = False,
     enable_fsdpa: bool = False,
     fp8_coverage: dict = {},
+    moe_dynamic_hpu: Optional[bool] = False,
+    fp8_smooth_swiglu: bool = False,
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -89,17 +90,28 @@ def get_gpt_layer_with_transformer_engine_spec(
         num_experts (int, optional): Number of experts. Defaults to None.
         moe_grouped_gemm (bool, optional): To use Grouped GEMM. Defaults to False.
         qk_layernorm (bool, optional): To use layernorm for queries/keys. Defaults to False.
-        fp8 (str, optional): Flag to decide the linear layer spec for MoE. Defaults to None.
+        fp8 (str, optional): Deprecated. For temporary Nemo compatibility.
+        moe_use_legacy_grouped_gemm (bool, optional): Force use the legacy GroupedMLP.
+                                                      Defaults to False.
 
     Returns:
         ModuleSpec: Module specification with TE modules
     """
-    mlp = _get_mlp_module_spec(
+    if fp8 is not None:
+        warnings.warn(
+            'The fp8 argument in "get_gpt_layer_with_transformer_engine_spec" has been deprecated'
+            ' and will be removed soon. Please update your code accordingly.'
+        )
+
+    mlp = get_mlp_module_spec(
         use_te=True,
         num_experts=num_experts,
         moe_grouped_gemm=moe_grouped_gemm,
+        moe_use_legacy_grouped_gemm=moe_use_legacy_grouped_gemm,
         fp8=fp8,
         fp8_coverage=fp8_coverage,
+        moe_dynamic_hpu=moe_dynamic_hpu,
+        fp8_smooth_swiglu=fp8_smooth_swiglu,
     )
 
     use_intel_te = not is_real_cuda_device_available()
@@ -131,17 +143,27 @@ def get_gpt_layer_with_transformer_engine_spec(
                     submodules=MLASelfAttentionSubmodules(
                         linear_q_proj=linear_col_proj,
                         linear_q_down_proj=linear_col_proj,
-                        linear_q_up_proj=linear_col_proj,
+                        linear_q_up_proj=linear_qkv if qk_layernorm else linear_col_proj,
                         linear_kv_down_proj=linear_col_proj,
-                        linear_kv_up_proj=linear_col_proj,
+                        linear_kv_up_proj=linear_qkv if qk_layernorm else linear_col_proj,
                         core_attention=core_attention_class,
                         linear_proj=linear_proj,
-                        q_layernorm=normalization_class if qk_layernorm else IdentityOp,
-                        kv_layernorm=normalization_class if qk_layernorm else IdentityOp,
+                        q_layernorm=(
+                            IdentityOp
+                            if HAVE_TE
+                            else normalization_class if qk_layernorm else IdentityOp
+                        ),
+                        kv_layernorm=(
+                            IdentityOp
+                            if HAVE_TE
+                            else normalization_class if qk_layernorm else IdentityOp
+                        ),
                     ),
                 ),
                 self_attn_bda=get_bias_dropout_add,
-                pre_mlp_layernorm=normalization_class if num_experts else IdentityOp,
+                pre_mlp_layernorm=(
+                    normalization_class if use_intel_te or num_experts else IdentityOp
+                ),
                 mlp=mlp,
                 mlp_bda=get_bias_dropout_add,
             ),
@@ -185,9 +207,12 @@ def get_gpt_layer_local_spec(
     moe_grouped_gemm: Optional[bool] = False,
     qk_layernorm: Optional[bool] = False,
     multi_latent_attention: Optional[bool] = False,
+    fp8: Optional[str] = None,  # pylint: disable=unused-argument
+    moe_use_legacy_grouped_gemm: Optional[bool] = False,
     normalization_type: str = 'LayerNorm',
     enable_fsdpa: bool = False,
     use_pre_norm=True,
+    moe_dynamic_hpu: Optional[bool] = False,
 ) -> ModuleSpec:
     """Use this spec for an implementation using only modules in Megatron-Core.
 
@@ -196,13 +221,26 @@ def get_gpt_layer_local_spec(
         num_experts (int, optional): Number of experts. Defaults to None.
         moe_grouped_gemm (bool, optional): To use Grouped GEMM. Defaults to False.
         qk_layernorm (bool, optional): To use layernorm for queries/keys. Defaults to False.
+        fp8 (str, optional): Deprecated. For temporary Nemo compatibility.
+        moe_use_legacy_grouped_gemm (bool, optional): Force use the legacy GroupedMLP.
+                                                      Defaults to False.
 
     Returns:
         ModuleSpec: Module specification with Megatron-Core modules
     """
+    if fp8 is not None:
+        warnings.warn(
+            'The fp8 argument in "get_gpt_layer_local_spec" has been deprecated'
+            ' and will be removed soon. Please update your code accordingly.'
+        )
 
-    mlp = _get_mlp_module_spec(
-        use_te=False, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm
+    mlp = get_mlp_module_spec(
+        use_te=False,
+        num_experts=num_experts,
+        moe_grouped_gemm=moe_grouped_gemm,
+        fp8=fp8,
+        moe_use_legacy_grouped_gemm=moe_use_legacy_grouped_gemm,
+        moe_dynamic_hpu=moe_dynamic_hpu,
     )
     if normalization_type not in ('LayerNorm', 'RMSNorm'):
         raise Exception(
@@ -278,20 +316,47 @@ def _get_mlp_module_spec(
     use_te: Optional[bool] = True,
     num_experts: Optional[int] = None,
     moe_grouped_gemm: Optional[bool] = False,
-    fp8: Optional[str] = None,
+    fp8: Optional[str] = None,  # pylint: disable=unused-argument
+    moe_use_legacy_grouped_gemm: Optional[bool] = False,
     fp8_coverage: dict = {},
+    moe_dynamic_hpu: Optional[bool] = False,
+    fp8_smooth_swiglu: bool = False,
 ) -> ModuleSpec:
-    """Helper function to get module spec for MLP"""
-    if num_experts is not None:
-        moe_spec = _get_moe_module_spec(
-            use_te=True,
-            num_experts=num_experts,
-            moe_grouped_gemm=moe_grouped_gemm,
-            fp8=fp8,
-            fp8_coverage=fp8_coverage,
-        )
-        return moe_spec
+    warnings.warn(
+        """This private function is on a deprecation track. Please switch to `get_mlp_module_spec`
+        since it will be removed in a future release."""
+    )
 
+    return get_mlp_module_spec(
+        use_te=use_te,
+        num_experts=num_experts,
+        moe_grouped_gemm=moe_grouped_gemm,
+        fp8=fp8,
+        moe_use_legacy_grouped_gemm=moe_use_legacy_grouped_gemm,
+        fp8_coverage=fp8_coverage,
+        moe_dynamic_hpu=moe_dynamic_hpu,
+    )
+
+
+def get_mlp_module_spec(
+    use_te: Optional[bool] = True,
+    num_experts: Optional[int] = None,
+    moe_grouped_gemm: Optional[bool] = False,
+    fp8: Optional[str] = None,  # pylint: disable=unused-argument
+    moe_use_legacy_grouped_gemm: Optional[bool] = False,
+    fp8_coverage: dict = {},
+    moe_dynamic_hpu: Optional[bool] = False,
+    fp8_smooth_swiglu: bool = False,
+) -> ModuleSpec:
+    """Helper function to get module spec for MLP/MoE"""
+    if fp8 is not None:
+        warnings.warn(
+            'The fp8 argument in "_get_mlp_module_spec" has been deprecated'
+            ' and will be removed soon. Please update your code accordingly.'
+        )
+
+    linear_fc1 = None
+    linear_fc2 = None
     if use_te:
         if is_real_cuda_device_available():
             linear_fc1 = TELayerNormColumnParallelLinear
@@ -299,92 +364,34 @@ def _get_mlp_module_spec(
         else:
             linear_fc1 = IntelTEColumnParallelLinear
             linear_fc2 = (
-                IntelTERowParallelLinear
-                if fp8_coverage.get('mlp_row_parallel', True)
-                else IntelTERowParallelLinearFp8Disabled
-            )
-    return ModuleSpec(
-        module=MLP,
-        submodules=MLPSubmodules(
-            linear_fc1=linear_fc1 if use_te else ColumnParallelLinear,
-            linear_fc2=linear_fc2 if use_te else RowParallelLinear,
-        ),
-    )
-
-
-def _get_moe_module_spec(
-    use_te: Optional[bool] = True,
-    num_experts: Optional[int] = None,
-    moe_grouped_gemm: Optional[bool] = False,
-    fp8: Optional[str] = None,
-    fp8_coverage: dict = {},
-) -> ModuleSpec:
-    """Helper function to get module spec for MoE"""
-    if num_experts is None:
-        return None
-    cuda_available = is_real_cuda_device_available()
-    if cuda_available:
-        if use_te and moe_grouped_gemm:
-            linear_fc1 = TEColumnParallelGroupedLinear
-            linear_fc2 = TERowParallelGroupedLinear
-        elif use_te and fp8:
-            linear_fc1 = TEColumnParallelLinear
-            linear_fc2 = TERowParallelLinear
-        else:
-            linear_fc1 = ColumnParallelLinear
-            linear_fc2 = RowParallelLinear
-    else:
-        if use_te:
-            if moe_grouped_gemm:
-                linear_fc1 = IntelTEColumnParallelGroupedLinear
-                linear_fc2 = (
-                    IntelTERowParallelGroupedLinear
+                IntelTERowParallelLinearFP8SmoothSwiglu
+                if fp8_smooth_swiglu
+                else (
+                    IntelTERowParallelLinear
                     if fp8_coverage.get('mlp_row_parallel', True)
-                    else IntelTERowParallelGroupedLinearFP8Disabled
+                    else IntelTERowParallelLinearFp8Disabled
                 )
-            else:
-                linear_fc1 = ColumnParallelLinear
-                linear_fc2 = RowParallelLinear
-        else:
-            linear_fc1 = ColumnParallelLinear
-            linear_fc2 = RowParallelLinear
-
-    if use_te:
-        if cuda_available:
-            se_linear_fc1 = TEColumnParallelLinear
-            se_linear_fc2 = TERowParallelLinear
-        else:
-            se_linear_fc1 = IntelTEColumnParallelLinear
-            # TODO: should we follow fp8 coverage here also ?
-            se_linear_fc2 = (
-                IntelTERowParallelLinear
-                if fp8_coverage.get('mlp_row_parallel', True)
-                else IntelTERowParallelLinearFp8Disabled
             )
 
-    if is_real_cuda_device_available():
-        use_te_grouped_gemm = use_te and HAVE_TE and TEColumnParallelGroupedLinear is not None
+    if num_experts is None:
+        # Dense MLP w/ or w/o TE modules.
+        return ModuleSpec(
+            module=MLP,
+            submodules=MLPSubmodules(
+                linear_fc1=linear_fc1 if use_te else ColumnParallelLinear,
+                linear_fc2=linear_fc2 if use_te else RowParallelLinear,
+            ),
+        )
     else:
-        use_te_grouped_gemm = use_te and IntelTEColumnParallelGroupedLinear is not None
-
-    return ModuleSpec(
-        module=MoELayer,
-        submodules=MoESubmodules(
-            experts=(
-                MLPSubmodules(linear_fc1=linear_fc1, linear_fc2=linear_fc2)
-                if not moe_grouped_gemm or use_te_grouped_gemm
-                else None
-            ),
-            shared_experts=ModuleSpec(
-                module=SharedExpertMLP,
-                params={"gate": False},
-                submodules=MLPSubmodules(
-                    linear_fc1=se_linear_fc1 if use_te else ColumnParallelLinear,
-                    linear_fc2=se_linear_fc2 if use_te else RowParallelLinear,
-                ),
-            ),
-        ),
-    )
+        # Mixture of experts with modules in megatron core.
+        return get_moe_module_spec(
+            use_te=use_te,
+            num_experts=num_experts,
+            moe_grouped_gemm=moe_grouped_gemm,
+            moe_use_legacy_grouped_gemm=moe_use_legacy_grouped_gemm,
+            fp8_coverage=fp8_coverage,
+            moe_dynamic_hpu=moe_dynamic_hpu,
+        )
 
 
 def get_gpt_decoder_block_spec(
@@ -394,6 +401,7 @@ def get_gpt_decoder_block_spec(
     fp8_coverage: dict = {},
     normalization_type: str = 'LayerNorm',
     use_pre_norm=True,
+    moe_dynamic_hpu: Optional[bool] = False,
 ) -> TransformerBlockSubmodules:
     """GPT block spec."""
     if use_transformer_engine:
@@ -411,8 +419,10 @@ def get_gpt_decoder_block_spec(
             qk_layernorm=config.qk_layernorm,
             multi_latent_attention=config.multi_latent_attention,
             fp8=config.fp8,
+            moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
             enable_fsdpa=enable_fsdpa,
             fp8_coverage=fp8_coverage,
+            moe_dynamic_hpu=moe_dynamic_hpu,
         )
         if use_transformer_engine
         else get_gpt_layer_local_spec(
@@ -420,9 +430,12 @@ def get_gpt_decoder_block_spec(
             moe_grouped_gemm=False,
             qk_layernorm=config.qk_layernorm,
             multi_latent_attention=config.multi_latent_attention,
+            fp8=config.fp8,
+            moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
             normalization_type=normalization_type,
             enable_fsdpa=enable_fsdpa,
             use_pre_norm=use_pre_norm,
+            moe_dynamic_hpu=moe_dynamic_hpu,
         )
     )
     moe_layer_spec = (
@@ -432,8 +445,10 @@ def get_gpt_decoder_block_spec(
             qk_layernorm=config.qk_layernorm,
             multi_latent_attention=config.multi_latent_attention,
             fp8=config.fp8,
+            moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
             enable_fsdpa=enable_fsdpa,
             fp8_coverage=fp8_coverage,
+            moe_dynamic_hpu=moe_dynamic_hpu,
         )
         if use_transformer_engine
         else get_gpt_layer_local_spec(
@@ -441,9 +456,12 @@ def get_gpt_decoder_block_spec(
             moe_grouped_gemm=config.moe_grouped_gemm,
             qk_layernorm=config.qk_layernorm,
             multi_latent_attention=config.multi_latent_attention,
+            fp8=config.fp8,
+            moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
             normalization_type=normalization_type,
             enable_fsdpa=enable_fsdpa,
             use_pre_norm=use_pre_norm,
+            moe_dynamic_hpu=moe_dynamic_hpu,
         )
     )
 
@@ -479,7 +497,7 @@ def get_gpt_decoder_block_spec(
 
     # Slice the layer specs to only include the layers that are built in this pipeline stage.
     # Note: MCore layer_number starts at 1
-    offset = TransformerLayer._get_layer_offset(config)
+    offset = get_transformer_layer_offset(config)
     num_layers_to_build = get_num_layers_to_build(config)
     layer_specs = layer_specs[offset : offset + num_layers_to_build]
 

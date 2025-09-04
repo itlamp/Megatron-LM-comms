@@ -11,7 +11,6 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_local_spec
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import call_mark_step
-from megatron.legacy.model import Float16Module
 from megatron.training.arguments import parse_args
 from megatron.training.initialize import _set_random_seed
 from tests.unit_tests.test_utilities import Utils
@@ -81,7 +80,12 @@ class TestIntelDynamicMLP:
         tf_config.moe_dynamic_hpu = True
         tf_config.moe_permuted_weights = self.permuted_weights
         tf_config.moe_fused_weights = self.fused_weights
-        self.dynamic_mlp = self.new_moe_layer(tf_config)
+        transformer_layer_spec = get_gpt_layer_local_spec(
+            self.num_experts, moe_grouped_gemm=False, moe_dynamic_hpu=tf_config.moe_dynamic_hpu
+        )
+        self.dynamic_mlp = self.new_moe_layer(
+            tf_config, transformer_layer_spec.submodules.mlp.submodules
+        )
         self.weight1 = self.dynamic_mlp.experts.expert_weights[0]
         self.weight2 = (
             self.dynamic_mlp.experts.expert_weights[1]
@@ -153,6 +157,7 @@ class TestIntelDynamicMLP:
         self.sequential_mlp.config.moe_dynamic_hpu = False
         output_smm, _ = self.sequential_mlp(hidden_states)
         output_smm.mean().backward()
+        call_mark_step()
 
         # calc grouped hpu fwd + bwd
         self.dynamic_mlp.config.moe_dynamic_hpu = True

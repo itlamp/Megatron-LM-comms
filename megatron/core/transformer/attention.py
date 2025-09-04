@@ -108,12 +108,9 @@ class Attention(MegatronModule, ABC):
         self.num_attention_heads_per_partition = divide(self.config.num_attention_heads, world_size)
         self.num_query_groups_per_partition = divide(self.config.num_query_groups, world_size)
 
-        attention_optional_kwargs = {}
-        if cp_comm_type is not None and is_real_cuda_device_available():
-            if isinstance(cp_comm_type, list):
-                attention_optional_kwargs["cp_comm_type"] = cp_comm_type[self.layer_number]
-            else:
-                attention_optional_kwargs["cp_comm_type"] = cp_comm_type
+        # To support both CUDA Graphs and key value with different hidden size
+        self.key_hidden_size = self.hidden_size_per_attention_head
+        self.val_hidden_size = self.hidden_size_per_attention_head
 
         self.core_attention = build_module(
             submodules.core_attention,
@@ -121,7 +118,8 @@ class Attention(MegatronModule, ABC):
             layer_number=self.layer_number,
             attn_mask_type=self.attn_mask_type,
             attention_type=self.attention_type,
-            **attention_optional_kwargs,
+            cp_comm_type=cp_comm_type,
+            softmax_scale=self.config.softmax_scale,
         )
 
         self.checkpoint_core_attention = self.config.recompute_granularity == 'selective'
@@ -225,6 +223,7 @@ class Attention(MegatronModule, ABC):
         rotary_pos_emb: Tensor,
         rotary_pos_cos: Tensor = None,
         rotary_pos_sin: Tensor = None,
+        sequence_len_offset=None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Saves the generated key and value tensors to the end of the buffers in inference_params.
@@ -245,10 +244,10 @@ class Attention(MegatronModule, ABC):
             inf_max_seq_length = inference_params.max_sequence_length
             inf_max_batch_size = inference_params.max_batch_size
             inference_key_memory = self._allocate_memory(
-                inf_max_seq_length, inf_max_batch_size, key.shape[-1], key.dtype
+                inf_max_seq_length, inf_max_batch_size, self.key_hidden_size, key.dtype
             )
             inference_value_memory = self._allocate_memory(
-                inf_max_seq_length, inf_max_batch_size, value.shape[-1], value.dtype
+                inf_max_seq_length, inf_max_batch_size, self.val_hidden_size, value.dtype
             )
             inference_params.key_value_memory_dict[self.layer_number] = (
                 inference_key_memory,
@@ -281,7 +280,7 @@ class Attention(MegatronModule, ABC):
                 rotary_pos_sin_q = rotary_pos_sin[sequence_end - 1 : sequence_end]
                 rotary_pos_cos_k = rotary_pos_cos[sequence_end - 1 : sequence_end]
                 rotary_pos_sin_k = rotary_pos_sin[sequence_end - 1 : sequence_end]
-            else:
+            else:  # Prefill
                 rotary_pos_cos_q = rotary_pos_cos[:sequence_end]
                 rotary_pos_sin_q = rotary_pos_sin[:sequence_end]
                 rotary_pos_cos_k = rotary_pos_cos[:sequence_end]
@@ -340,7 +339,6 @@ class Attention(MegatronModule, ABC):
             "Flash Decoding requires the flash_attn_with_kvcache kernel, "
             "available in the flash-attn package."
         )
-        cache_seqlens = sequence_len_offset - 1
         q = query_layer.permute(1, 0, 2, 3)
         k = key_layer.permute(1, 0, 2, 3)
         v = value_layer.permute(1, 0, 2, 3)
@@ -360,7 +358,7 @@ class Attention(MegatronModule, ABC):
             v=v,
             rotary_cos=rotary_cos,
             rotary_sin=rotary_sin,
-            cache_seqlens=cache_seqlens,
+            cache_seqlens=sequence_len_offset,
             rotary_interleaved=False,
         )
         return out
@@ -376,6 +374,7 @@ class Attention(MegatronModule, ABC):
         rotary_pos_sin=None,
         attention_bias=None,
         packed_seq_params=None,
+        sequence_len_offset=None,
     ):
         """
         Perform a forward pass through the attention module.
@@ -407,15 +406,15 @@ class Attention(MegatronModule, ABC):
         if (
             self.config.flash_decode
             and inference_params is not None
-            and self.layer_number
-            in inference_params.key_value_memory_dict  # Decode phase if key already exists
+            and inference_params.decode_mode
         ):
+            assert self.layer_number in inference_params.key_value_memory_dict
             assert inference_params.sequence_len_offset is not None
             inference_key_memory, inference_value_memory = inference_params.key_value_memory_dict[
                 self.layer_number
             ]
             output = self.flash_decoding(
-                sequence_len_offset=inference_params.sequence_len_offset,
+                sequence_len_offset=sequence_len_offset,
                 query_layer=query,
                 key_layer=key,
                 value_layer=value,
@@ -430,7 +429,14 @@ class Attention(MegatronModule, ABC):
             return output, bias
 
         query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
-            inference_params, query, key, value, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin
+            inference_params,
+            query,
+            key,
+            value,
+            rotary_pos_emb,
+            rotary_pos_cos,
+            rotary_pos_sin,
+            sequence_len_offset,
         )
 
         if packed_seq_params is not None:

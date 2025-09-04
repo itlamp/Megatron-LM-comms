@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Intel Corporation
+# © 2024-2025 Intel Corporation
 # All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+from typing import Optional
 
 from torch import Tensor
 
@@ -25,6 +27,8 @@ from megatron.core.utils import divide
 
 
 class FusedDotProductAttention(MegatronModule):
+    """FusedDotProductAttention."""
+
     def __init__(
         self,
         config: TransformerConfig,
@@ -32,6 +36,10 @@ class FusedDotProductAttention(MegatronModule):
         attn_mask_type: AttnMaskType,
         attention_type: str,
         attention_dropout: float = None,
+        softmax_scale: float = None,
+        k_channels: Optional[int] = None,
+        v_channels: Optional[int] = None,
+        cp_comm_type: str = None,
     ):
         super(FusedDotProductAttention, self).__init__(config=config)
 
@@ -48,6 +56,7 @@ class FusedDotProductAttention(MegatronModule):
         from habana_frameworks.torch.hpex.kernels import FusedSDPA
 
         self.fused_sdpa = FusedSDPA
+        self.layer_number = max(1, layer_number)
         self.attn_mask_type = attn_mask_type
         self.attention_type = attention_type  # unused for now
         if attention_dropout is not None:
@@ -59,6 +68,15 @@ class FusedDotProductAttention(MegatronModule):
         # Per attention head and per partition values.
         world_size = parallel_state.get_tensor_model_parallel_world_size()
         self.hidden_size_per_partition = divide(projection_size, world_size)
+        self.hidden_size_per_attention_head = divide(projection_size, config.num_attention_heads)
+
+        if softmax_scale is None:
+            self.softmax_scale = 1.0 / math.sqrt(self.hidden_size_per_attention_head)
+        else:
+            self.softmax_scale = softmax_scale
+
+        if self.config.apply_query_key_layer_scaling:
+            self.softmax_scale /= self.layer_number
 
     def forward(
         self,
@@ -70,6 +88,7 @@ class FusedDotProductAttention(MegatronModule):
         attention_bias: Tensor = None,
         packed_seq_params: PackedSeqParams = None,
     ):
+        """Forward."""
         assert (
             attention_bias is None
         ), "Attention bias is not supported for FusedDotProductAttention."
@@ -79,9 +98,11 @@ class FusedDotProductAttention(MegatronModule):
 
         # [sq, b, np, hn] -> [b, np, sq, hn]
         q, k, v = [x.transpose(0, 1).transpose(1, 2) for x in [query, key, value]]
-        causal = True
-        scale = None
-        attn_mask = None
+        causal = attn_mask_type == AttnMaskType.causal
+        scale = (
+            None if causal and not self.config.apply_query_key_layer_scaling else self.softmax_scale
+        )
+        attn_mask = None if causal else attention_mask
         context_layer = self.fused_sdpa.apply(
             q,
             k,

@@ -1,10 +1,11 @@
+# Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 ##
 # Compile megatron.core.datasets.helpers_cpp dependencies before BlendedDataset import
 ##
 
-import random
+import secrets
 
 import numpy
 import pytest
@@ -21,7 +22,7 @@ _MOCK_VOCAB_SIZE = 8192
 
 def sample_N(dataset, N, randomize):
     if randomize:
-        indices = [random.randint(0, len(dataset) - 1) for _ in range(N)]
+        indices = [secrets.SystemRandom().randint(0, len(dataset) - 1) for _ in range(N)]
     else:
         indices = list(range(N))
     samples = [dataset[index]["tokens"].numpy() for index in indices]

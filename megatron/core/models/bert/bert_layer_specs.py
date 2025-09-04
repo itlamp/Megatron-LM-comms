@@ -4,7 +4,6 @@
 import warnings
 
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-from megatron.core.fusions.fused_dot_product_attention import FusedDotProductAttention
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
@@ -68,15 +67,7 @@ def get_bert_layer_with_transformer_engine_spec():
         linear_proj = TERowParallelLinear
         linear_qkv = TELayerNormColumnParallelLinear
     else:
-        enable_fsdpa = False
-        from intel_transformer_engine.utils import is_gaudi3
-
-        if is_gaudi3() and enable_fsdpa:
-            core_attention_class = IntelTEDotProductAttention
-        elif enable_fsdpa:
-            core_attention_class = FusedDotProductAttention
-        else:
-            core_attention_class = DotProductAttention
+        core_attention_class = IntelTEDotProductAttention
         linear_fc1 = IntelTEColumnParallelLinear
         linear_fc2 = IntelTERowParallelLinear
         linear_proj = IntelTERowParallelLinear

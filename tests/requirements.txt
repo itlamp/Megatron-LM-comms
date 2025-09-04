@@ -1,8 +1,10 @@
 einops
 flask-restful
 junitparser
+mock
 numpy
 pytest
+pytest_asyncio
 pytest-cov
 pytest_mock
 scipy

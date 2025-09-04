@@ -7,11 +7,15 @@ from typing import Union
 
 import torch
 
-from megatron.core import parallel_state
 from megatron.core.models.common.embeddings import (
+    RotaryEmbedding,
     YarnRotaryEmbedding,
     _yarn_get_mscale,
     apply_rotary_pos_emb,
+)
+from megatron.core.tensor_parallel.mappings import (
+    gather_from_tensor_model_parallel_region,
+    scatter_to_sequence_parallel_region,
 )
 from megatron.core.transformer.attention import Attention
 from megatron.core.transformer.enums import AttnMaskType
@@ -50,11 +54,6 @@ class MultiLatentAttention(Attention):
         attention_type: str,
         cp_comm_type: str = None,
     ) -> None:
-        world_size = parallel_state.get_tensor_model_parallel_world_size()
-        assert (
-            world_size == 1
-        ), "MLA is not supported with Tensor Parallelism yet, \
-        use Expert Parallelism and Pipeline Parallelism for better performance."
 
         super().__init__(
             config=config,
@@ -68,19 +67,35 @@ class MultiLatentAttention(Attention):
 
         self.q_head_dim = self.config.qk_head_dim + self.config.qk_pos_emb_head_dim
 
+        # Overwrite the base class kv shape to support MLA inference
+        self.key_hidden_size = self.q_head_dim
+        self.val_hidden_size = self.config.v_head_dim
+
         mscale = _yarn_get_mscale(self.config.rotary_scaling_factor, self.config.mscale)
         self.softmax_scale = mscale * mscale / math.sqrt(self.q_head_dim)
 
-        self.rotary_pos_emb = YarnRotaryEmbedding(
-            self.config.qk_pos_emb_head_dim,
-            rotary_base=self.config.rotary_base,
-            scaling_factor=self.config.rotary_scaling_factor,
-            original_max_position_embeddings=self.config.max_position_embeddings,
-            beta_fast=self.config.beta_fast,
-            beta_slow=self.config.beta_slow,
-            mscale=self.config.mscale,
-            mscale_all_dim=self.config.mscale_all_dim,
-        )
+        if self.config.rope_type == "rope":
+            self.rotary_pos_emb = RotaryEmbedding(
+                self.config.qk_pos_emb_head_dim,
+                rotary_percent=self.config.rotary_percent,
+                rotary_base=self.config.rotary_base,
+            )
+        elif self.config.rope_type == "yarn":
+            self.rotary_pos_emb = YarnRotaryEmbedding(
+                self.config.qk_pos_emb_head_dim,
+                rotary_base=self.config.rotary_base,
+                scaling_factor=self.config.rotary_scaling_factor,
+                original_max_position_embeddings=self.config.max_position_embeddings,
+                beta_fast=self.config.beta_fast,
+                beta_slow=self.config.beta_slow,
+                mscale=self.config.mscale,
+                mscale_all_dim=self.config.mscale_all_dim,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported RoPE type: {self.config.rope_type}, supported types are "
+                "'rope' and 'yarn'"
+            )
 
         self.core_attention = build_module(
             submodules.core_attention,
@@ -120,6 +135,7 @@ class MultiLatentAttention(Attention):
         attention_bias=None,
         packed_seq_params=None,
         position_ids=None,
+        sequence_len_offset=None,
     ):
         """Forward pass for multi-latent attention"""
         assert rotary_pos_emb is None, "Rotary position embeddings should not be passed into MLA."
@@ -151,6 +167,11 @@ class MultiLatentAttention(Attention):
         query, key, value, _, attn_mask_type = self._adjust_key_value_for_inference(
             inference_params, query, key, value, rotary_pos_emb=None
         )
+
+        # TODO: Currently, TE can only accept contiguous tensors for MLA
+        query = query.contiguous()
+        key = key.contiguous()
+        value = value.contiguous()
 
         # ==================================
         # core attention computation
@@ -230,9 +251,9 @@ class MLASelfAttention(MultiLatentAttention):
                 self.config.q_lora_rank,
                 config=self.config,
                 init_method=self.config.init_method,
-                gather_output=False,
                 bias=False,
                 skip_bias_add=False,
+                gather_output=False,
                 is_expert=False,
             )
 
@@ -254,9 +275,9 @@ class MLASelfAttention(MultiLatentAttention):
             self.config.kv_lora_rank + self.config.qk_pos_emb_head_dim,
             config=self.config,
             init_method=self.config.init_method,
-            gather_output=False,
             bias=False,
             skip_bias_add=False,
+            gather_output=False,
             is_expert=False,
         )
 
@@ -303,15 +324,18 @@ class MLASelfAttention(MultiLatentAttention):
         assert (
             hidden_states.ndim == 3
         ), f"hidden_states should be 3D, [s, b, n*h], got {hidden_states.ndim}D"
-        q_len, bsz, _ = hidden_states.size()
 
         if self.config.q_lora_rank is not None:
             q_compressed, _ = self.linear_q_down_proj(hidden_states)
-            q_compressed = self.q_layernorm(q_compressed)
-            q, _ = self.linear_q_up_proj(q_compressed)
+            q_compressed = gather_from_tensor_model_parallel_region(q_compressed)
+            if self.config.sequence_parallel:
+                q_compressed = scatter_to_sequence_parallel_region(q_compressed)
+            q, _ = self.linear_q_up_proj(self.q_layernorm(q_compressed))
         else:
             # hidden_states:[s, b, 2048], q: [s, b, n * 192]
             q, _ = self.linear_q_proj(hidden_states)
+
+        q_len, bsz, _ = q.size()
 
         # q: [s, b, n, 192]
         q = q.view(q_len, bsz, self.num_attention_heads_per_partition, self.q_head_dim)
@@ -323,12 +347,15 @@ class MLASelfAttention(MultiLatentAttention):
 
         # kv_combined: [s, b, 576]
         kv_combined, _ = self.linear_kv_down_proj(hidden_states)
+        kv_combined = gather_from_tensor_model_parallel_region(kv_combined)
 
         # kv_compressed:[s, b, 512], k_pos_emb: [s, b, 64]
         kv_compressed, k_pos_emb = torch.split(
             kv_combined, [self.config.kv_lora_rank, self.config.qk_pos_emb_head_dim], dim=-1
         )
 
+        if self.config.sequence_parallel:
+            kv_compressed = scatter_to_sequence_parallel_region(kv_compressed)
         # kv: [s, b, 2048]
         kv, _ = self.linear_kv_up_proj(self.kv_layernorm(kv_compressed))
 
@@ -343,12 +370,17 @@ class MLASelfAttention(MultiLatentAttention):
         # k_no_pe: [s, b, n, 128], value: [s, b, n, 128]
         k_no_pe, value = torch.split(kv, [self.config.qk_head_dim, self.config.v_head_dim], dim=-1)
 
-        # rotary_pos_emb:[s, b, 1, 64]
-        rotary_pos_emb = self.rotary_pos_emb(max_seq_len=self.config.max_position_embeddings)
+        rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
+            inference_params, None, hidden_states, self.config, packed_seq_params
+        )
 
-        if len(rotary_pos_emb) == 2:
-            mscale = rotary_pos_emb[1]
-            rotary_pos_emb = rotary_pos_emb[0]
+        # rotary_pos_emb:[s, b, 1, 64]
+        mscale = 1.0
+        if self.config.rope_type == "rope":
+            packed_seq = packed_seq_params is not None and packed_seq_params.qkv_format == 'thd'
+            rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len, packed_seq=packed_seq)
+        else:
+            rotary_pos_emb, mscale = self.rotary_pos_emb(rotary_seq_len)
 
         if inference_params is not None:
             # add offset to the sequence start for inference
@@ -377,11 +409,7 @@ class MLASelfAttention(MultiLatentAttention):
         query = torch.cat([q_no_pe, q_pos_emb], dim=-1)
 
         # key: [s, b, n, 192]
-        k_pos_emb = k_pos_emb.expand(-1, -1, self.config.num_attention_heads, -1)
+        k_pos_emb = k_pos_emb.expand(-1, -1, self.num_attention_heads_per_partition, -1)
         key = torch.cat([k_no_pe, k_pos_emb], dim=-1)
-
-        query = query.contiguous()
-        key = key.contiguous()
-        value = value.contiguous()
 
         return query, key, value

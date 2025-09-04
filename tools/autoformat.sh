@@ -38,7 +38,7 @@ fi
 if [[ -n "$CHANGED_FILES" ]]; then
     black --skip-magic-trailing-comma $ADDITIONAL_ARGS $ADDITIONAL_BLACK_ARGS --verbose $CHANGED_FILES
     isort $ADDITIONAL_ARGS $CHANGED_FILES
-    # pylint $ADDITIONAL_PYLINT_ARGS $CHANGED_FILES
+    pylint $ADDITIONAL_PYLINT_ARGS $CHANGED_FILES
     # mypy --explicit-package-bases --follow-imports=skip $CHANGED_FILES || true
 else
     echo Changeset is empty, all good.

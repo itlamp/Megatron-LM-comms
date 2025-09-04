@@ -30,7 +30,6 @@ def model_provider(
         model: A multimodal model.
     """
     args = get_args()
-    assert args.ckpt_format == 'torch', "Only ckpt-format torch is supported for VLM training currently."
     assert args.encoder_pipeline_model_parallel_size <= 1, "LLaVA does not support pp>1 for encoder on it's own pipeline rank"
 
     use_te = args.use_te
@@ -91,7 +90,7 @@ def model_provider(
     )
 
     vision_model_type = args.vision_model_type
-    if vision_model_type in ["clip", "siglip"]:
+    if vision_model_type in ["clip", "siglip", "radio"]:
         if use_te:
             vision_transformer_layer_spec = get_layer_spec_te(
                 is_vit=True
@@ -136,8 +135,23 @@ def model_provider(
     else:
         vision_projection_layer_spec = get_mlp_module_spec(use_te=use_te).submodules
 
+    # Toggle --recompute* for the vision and language model separately.
+    if args.recompute_vision:
+        if vision_config.recompute_method is not None and vision_config.recompute_granularity is not None:
+            vision_config.recompute_num_layers = vision_config.num_layers
+    else:
+        vision_config.recompute_granularity = None
+        vision_config.recompute_method = None
+        vision_config.recompute_num_layers = None
+
+    vision_projection_config.recompute_granularity = None
+    vision_projection_config.recompute_method = None
+    vision_projection_config.recompute_num_layers = None
+
+
     tokenizer = get_tokenizer()
     image_token_index = tokenizer.convert_tokens_to_ids(IMAGE_TOKEN)
+    assert image_token_index is not None, f"IMAGE_TOKEN={IMAGE_TOKEN} needs to be added using the --special-tokens arg."
 
     tile_tags = _get_tile_tags(args, tokenizer)
 
@@ -154,6 +168,7 @@ def model_provider(
         vision_projection_type="mlp",
         allow_missing_vision_projection_checkpoint=args.allow_missing_vision_projection_checkpoint,
         parallel_output=parallel_output,
+        share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
         language_position_embedding_type=args.position_embedding_type,
         language_rotary_percent=args.rotary_percent,
         pre_process=pre_process,

@@ -95,7 +95,7 @@ python $MEGATRON_LM_ROOT/tools/checkpoint/convert.py \
 --load-dir "/path/to/hf/checkpoints" \
 --save-dir "/path/to/save/mlm/checkpoint" \
 --tokenizer-model "/path/to/tokenizer/model" \
---model-size llama3-70B
+--model-size llama3
 ```
 
 ### [Mixtral] Usage
@@ -110,7 +110,7 @@ python $MEGATRON_LM_ROOT/tools/checkpoint/convert.py \
 --model-type GPT \
 --loader mixtral_hf \
 --saver mcore \
---saver-transformer-impl local \
+--saver-transformer-impl transformer_engine \
 --target-tensor-parallel-size $TP \
 --target-pipeline-parallel-size $PP \
 --target-expert-parallel-size $EP \

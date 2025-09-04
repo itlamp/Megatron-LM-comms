@@ -15,17 +15,15 @@ from megatron.core.models.bert.bert_layer_specs import (
 )
 from megatron.core.models.bert.bert_model import BertModel
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
-from megatron.core.transformer.enums import AttnMaskType
+from megatron.core.transformer.enums import AttnBackend, AttnMaskType
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.utils import is_real_cuda_device_available, is_te_min_version
+from megatron.core.utils import is_real_cuda_device_available
 from tests.unit_tests.test_utilities import Utils
 
 
 class TestBertModel:
 
     def setup_method(self, method):
-        os.environ['NVTE_FUSED_ATTN'] = '0'
-        os.environ['NVTE_FLASH_ATTN'] = '0'
         tp = 1
         pp = 1
         Utils.initialize_model_parallel(tp, pp)
@@ -39,6 +37,9 @@ class TestBertModel:
             tensor_model_parallel_size=tp,
             pipeline_model_parallel_size=pp,
             pipeline_dtype=torch.bfloat16,
+            attention_backend=(
+                AttnBackend.unfused if is_real_cuda_device_available() else AttnBackend.auto
+            ),
         )
         self.bert_model = BertModel(
             config=transformer_config,
@@ -99,9 +100,6 @@ class TestBertModelAttentionDimensions:
 
     def teardown_method(self, method):
         Utils.destroy_model_parallel()
-        os.environ.pop('NVTE_FUSED_ATTN', None)
-        os.environ.pop('NVTE_FLASH_ATTN', None)
-        os.environ.pop('NVTE_UNFUSED_ATTN', None)
 
     def setup_method(self, method):
         Utils.initialize_model_parallel(1, 1)
@@ -112,6 +110,7 @@ class TestBertModelAttentionDimensions:
             num_attention_heads=4,
             use_cpu_initialization=True,
             pipeline_dtype=torch.bfloat16,
+            attention_backend=AttnBackend.auto,
         )
         # This should convert arbitray mask to padding mask
         self.bert_model = BertModel(
@@ -124,11 +123,23 @@ class TestBertModelAttentionDimensions:
 
     @pytest.mark.internal
     def test_local_spec(self, mocker):
+        self.bert_model.config.attention_backend = AttnBackend.local
         self.bert_model.transformer_layer_spec = bert_layer_local_spec
         attn_mask_dimensions = self.bert_model._sanity_check_attention_and_get_attn_mask_dimension()
         assert (
             attn_mask_dimensions == "b1ss"
         ), f"Expected b1ss for attn_mask_dimensions but got {attn_mask_dimensions}"
+
+    @pytest.mark.internal
+    def test_local_spec_exception(self, mocker):
+        self.bert_model.config.attention_backend = AttnBackend.flash
+        self.bert_model.transformer_layer_spec = bert_layer_local_spec
+        with pytest.raises(Exception) as exc_info:
+            self.bert_model._sanity_check_attention_and_get_attn_mask_dimension()
+        assert (
+            str(exc_info.value)
+            == 'Expected AttnBackend to be local or auto while using mcore self attention, but found AttnBackend.flash. Set --attn-backend to local or dont use MCore SelfAttention submodule in layer specs'
+        )
 
     @pytest.mark.internal
     def test_transformer_engine_version_1_10(self, mocker):
@@ -151,8 +162,7 @@ class TestBertModelAttentionDimensions:
 
     @pytest.mark.internal
     def test_transformer_engine_version_1_7_to_1_10_flash_attn(self, mocker):
-        os.environ['NVTE_FLASH_ATTN'] = '1'
-
+        self.bert_model.config.attention_backend = AttnBackend.flash
         mocker.patch("megatron.core.utils.get_te_version", return_value=PkgVersion("1.8"))
         self.bert_model.transformer_layer_spec = bert_layer_with_transformer_engine_spec
         if is_real_cuda_device_available():
@@ -166,9 +176,6 @@ class TestBertModelAttentionDimensions:
     @pytest.mark.internal
     @pytest.mark.flaky_in_dev
     def test_transformer_engine_version_1_7_to_1_10_rng_error(self, mocker):
-        os.environ['NVTE_FLASH_ATTN'] = '0'
-        os.environ['NVTE_FUSED_ATTN'] = '0'
-
         bert_layer_with_transformer_engine_spec.submodules.self_attention.params[
             'attn_mask_type'
         ] == AttnMaskType.padding
@@ -190,8 +197,9 @@ class TestBertModelAttentionDimensions:
 
     @pytest.mark.internal
     def test_transformer_engine_version_1_7_to_1_10_unfused_attention(self, mocker):
-        os.environ['NVTE_FLASH_ATTN'] = '0'
-        os.environ['NVTE_FUSED_ATTN'] = '0'
+        self.bert_model.config.attention_backend = (
+            AttnBackend.unfused if is_real_cuda_device_available() else AttnBackend.auto
+        )
         bert_layer_with_transformer_engine_spec.submodules.self_attention.params[
             'attn_mask_type'
         ] == AttnMaskType.padding
@@ -212,23 +220,24 @@ class TestBertModelAttentionDimensions:
             attn_mask_dimensions == "b1ss"
         ), f"Expected b1ss for attn_mask_dimensions but got {attn_mask_dimensions}"
 
-        Utils.destroy_model_parallel()
-
     @pytest.mark.internal
     def test_transformer_engine_version_less_than_1_7(self, mocker):
-        os.environ['NVTE_FLASH_ATTN'] = '1'
-        with pytest.raises(Exception) as exc_info:
-            mocker.patch("megatron.core.utils.get_te_version", return_value=PkgVersion("1.5"))
-            self.bert_model = BertModel(
-                config=self.transformer_config,
-                num_tokentypes=0,
-                transformer_layer_spec=bert_layer_with_transformer_engine_spec,
-                vocab_size=100,
-                max_sequence_length=4,
-            )
+        os.environ.pop('NVTE_FUSED_ATTN', None)
+        os.environ.pop('NVTE_FLASH_ATTN', None)
+        os.environ.pop('NVTE_UNFUSED_ATTN', None)
+        self.bert_model.config.attention_backend = AttnBackend.flash
+        if is_real_cuda_device_available():
+            with pytest.raises(Exception) as exc_info:
+                mocker.patch("megatron.core.utils.get_te_version", return_value=PkgVersion("1.5"))
+                self.bert_model = BertModel(
+                    config=self.transformer_config,
+                    num_tokentypes=0,
+                    transformer_layer_spec=bert_layer_with_transformer_engine_spec,
+                    vocab_size=100,
+                    max_sequence_length=4,
+                )
 
-        assert str(exc_info.value) == (
-            "Flash and fused attention is not supported with transformer engine version "
-            "< 1.7. Set NVTE_FLASH_ATTN=0 and NVTE_FUSED_ATTN=0 or upgrade transformer "
-            "engine >= 1.7"
-        )
+            assert str(exc_info.value) == (
+                "Flash and fused attention is not supported with transformer engine version "
+                "< 1.7. Set --attention-backend to unfused or leave it to be default (auto) or upgrade transformer engine >= 1.7"
+            )

@@ -25,8 +25,8 @@ from megatron.core.enums import ModelType
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
 from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 from megatron.core.datasets.gpt_dataset import MockGPTDataset, GPTDataset
-from megatron.core.utils import is_real_cuda_device_available
 from megatron.core.rerun_state_machine import get_rerun_state_machine
+from megatron.core.utils import is_real_cuda_device_available
 import megatron.legacy.model
 from megatron.core.models.gpt import GPTModel
 from megatron.training import pretrain
@@ -48,7 +48,7 @@ from megatron.core.models.gpt.gpt_layer_specs import (
 
 stimer = StragglerDetector()
 
-def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
+def model_provider(pre_process=True, post_process=True, parallel_output=True) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
     """Builds the model.
 
     If you set the use_legacy_models to True, it will return the legacy GPT model and if not the mcore GPT model.
@@ -89,7 +89,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
         model = megatron.legacy.model.GPTModel(
             config,
             num_tokentypes=0,
-            parallel_output=True,
+            parallel_output=parallel_output,
             pre_process=pre_process,
             post_process=post_process,
         )
@@ -105,19 +105,20 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                                                                     enable_fsdpa=enable_fused_sdpa,
                                                                     fp8_coverage=args.fp8_coverage,
                                                                     normalization_type=args.normalization,
-                                                                    use_pre_norm=use_pre_norm)
+                                                                    use_pre_norm=use_pre_norm,
+                                                                    moe_dynamic_hpu=args.moe_dynamic_hpu)
             else:
                 # Define the decoder layer spec
                 if use_te:
                     transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
                         args.num_experts, args.moe_grouped_gemm,
-                        args.qk_layernorm, args.multi_latent_attention, args.fp8,
-                        enable_fused_sdpa, args.fp8_coverage)
+                        args.qk_layernorm, args.multi_latent_attention, args.fp8, args.moe_use_legacy_grouped_gemm,
+                        enable_fused_sdpa, args.fp8_coverage, args.moe_dynamic_hpu, args.fp8_smooth_swiglu)
                 else:
                     transformer_layer_spec = get_gpt_layer_local_spec(
                         args.num_experts, args.moe_grouped_gemm,
-                        args.qk_layernorm, args.multi_latent_attention,
-                        args.normalization, enable_fused_sdpa, use_pre_norm)
+                        args.qk_layernorm, args.multi_latent_attention, args.fp8, args.moe_use_legacy_grouped_gemm,
+                        args.normalization, enable_fused_sdpa, use_pre_norm, args.moe_dynamic_hpu)
 
         build_model_context = nullcontext
         build_model_context_args = {}
@@ -143,7 +144,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 pre_process=pre_process,
                 post_process=post_process,
                 fp16_lm_cross_entropy=args.fp16_lm_cross_entropy,
-                parallel_output=True,
+                parallel_output=parallel_output,
                 share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
                 position_embedding_type=args.position_embedding_type,
                 rotary_percent=args.rotary_percent,
@@ -278,7 +279,6 @@ def core_gpt_dataset_config_from_args(args):
         sequence_length=args.seq_length,
         blend=blend,
         blend_per_split=blend_per_split,
-        renormalize_blend_weights=args.renormalize_blend_weights,
         split=args.split,
         num_dataset_builder_threads=args.num_dataset_builder_threads,
         path_to_cache=args.data_cache_path,

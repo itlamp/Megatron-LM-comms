@@ -17,13 +17,12 @@ from megatron.core.dist_checkpointing.mapping import (
 from megatron.core.fusions.fused_bias_geglu import bias_geglu_impl
 from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
 from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl
-from megatron.core.tensor_parallel import scatter_to_sequence_parallel_region
-from megatron.core.tensor_parallel.mappings import _max_reduce_along_gather_last_dim
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 
+# pylint: disable=missing-class-docstring
 @dataclass
 class MLPSubmodules:
     linear_fc1: Union[ModuleSpec, type] = None
@@ -96,12 +95,9 @@ class MLP(MegatronModule):
 
         self.bias_activation_fusion = self.config.bias_activation_fusion
 
-        self.scaled_swiglu = None
-        if self.config.fp8_smooth_swiglu:  # should be enabled in fp8 training fwd only
-            self.bias_activation_fusion = False  # global bias_activation_fusion setting to False should be done in arguments.py when fp8 TEGroupedMLP is ready
-            from intel_transformer_engine import ScaledSwiglu
-
-            self.scaled_swiglu = ScaledSwiglu()  # Smooth-SwiGLU https://arxiv.org/pdf/2409.12517
+        if self.config.fp8_smooth_swiglu:  # should be enabled in row parallel fp8 training fwd only
+            self.bias_activation_fusion = False  # global bias_activation_fusion setting to False
+            # should be done in arguments.py when fp8 TEGroupedMLP is ready
 
     def forward(self, hidden_states):
         """Perform the forward pass through the MLP block."""
@@ -128,27 +124,14 @@ class MLP(MegatronModule):
                 intermediate_parallel = intermediate_parallel + bias_parallel
             if self.config.gated_linear_unit:
 
+                if self.config.fp8_smooth_swiglu and self.training:
+                    return self.linear_fc2(intermediate_parallel)
+
                 def glu(x):
                     x = torch.chunk(x, 2, dim=-1)
                     return self.config.activation_func(x[0]) * x[1]
 
-                if (
-                    self.scaled_swiglu is not None and self.training
-                ):  # should be enabled for fwd in fp8 training only
-                    # 1. smooth swiglu - downscale the intermediate_parallel and get the scale factor
-                    intermediate_parallel, s = self.scaled_swiglu(intermediate_parallel)
-                    s = _max_reduce_along_gather_last_dim(s)  # get max from TP group
-
-                    # [s, b, h]
-                    output, output_bias = self.linear_fc2(intermediate_parallel)
-
-                    if self.linear_fc2.sequence_parallel:
-                        s = scatter_to_sequence_parallel_region(s)
-
-                    output = output * s  # 2. smooth swiglu - upscale back the matmul output
-                    return output, output_bias
-                else:
-                    intermediate_parallel = glu(intermediate_parallel)
+                intermediate_parallel = glu(intermediate_parallel)
             else:
                 intermediate_parallel = self.activation_func(intermediate_parallel)
 
@@ -157,6 +140,7 @@ class MLP(MegatronModule):
 
         return output, output_bias
 
+    # pylint: disable=missing-function-docstring
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[dict] = None
     ) -> ShardedStateDict:
@@ -172,6 +156,7 @@ class MLP(MegatronModule):
         return sharded_state_dict
 
 
+# pylint: disable=missing-function-docstring
 def apply_swiglu_sharded_factory(original_sh_ten, sharded_offsets):
     # We must split the tensor into 2 parts, each sharded separately.
     # This requires a ShardedTensorFactory which `chunk`s during saving

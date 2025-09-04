@@ -11,6 +11,7 @@ from megatron.core import parallel_state
 from megatron.core.aux_loss import AuxLossAutoScaler
 from megatron.core.enums import ModelType
 from megatron.core.pipeline_parallel import p2p_communication
+from megatron.core.transformer.cuda_graphs import create_cudagraphs
 from megatron.core.transformer.moe.router import MoEAuxLossAutoScaler
 from megatron.core.utils import (
     call_mark_step,
@@ -434,6 +435,7 @@ def forward_backward_no_pipelining(
     forward_only: bool = False,
     collect_non_loss_data: bool = False,
     first_val_step: bool = None,
+    compile_from_sec_mini_batch: bool = None,
 ):
     """Run forward and backward passes with no pipeline parallelism
     (no inter-stage communication).
@@ -468,6 +470,10 @@ def forward_backward_no_pipelining(
     total_num_tokens = torch.zeros([], dtype=torch.int, device="cuda")
     with no_sync_func():
         for i in range(num_microbatches - 1):
+            if compile_from_sec_mini_batch is not None:
+                torch.compiler.set_stance(
+                    "force_eager" if compile_from_sec_mini_batch and i == 0 else "default"
+                )
             output_tensor, num_tokens = forward_step(
                 forward_step_func,
                 data_iterator,
@@ -522,6 +528,9 @@ def forward_backward_no_pipelining(
 
     if config.timers is not None:
         config.timers('forward-backward').stop()
+
+    if hasattr(config, 'enable_cuda_graph') and config.enable_cuda_graph:
+        create_cudagraphs()
 
     return forward_data_store
 
@@ -579,6 +588,7 @@ def forward_backward_pipelining_with_interleaving(
     forward_only: bool = False,
     collect_non_loss_data: bool = False,
     first_val_step: bool = None,
+    compile_from_sec_mini_batch: bool = None,
 ):
     """Run interleaved 1F1B schedule (model split into model chunks), with
     communication between pipeline stages as needed.
@@ -951,7 +961,7 @@ def forward_backward_pipelining_with_interleaving(
 
         return output_tensor
 
-    def backward_step_helper(virtual_microbatch_id):
+    def backward_step_helper(virtual_microbatch_id, output_tensor_grads):
         """Helper method to run backward step with model split into chunks
         (run set_virtual_pipeline_model_parallel_rank() before calling
         backward_step())."""
@@ -1024,6 +1034,8 @@ def forward_backward_pipelining_with_interleaving(
     recv_next_wait_handles = []
 
     for k in range(num_warmup_microbatches):
+        if compile_from_sec_mini_batch is not None:
+            torch.compiler.set_stance("force_eager" if compile_from_sec_mini_batch else "default")
         cur_model_chunk_id = get_model_chunk_id(k, forward=True)
         parallel_state.set_virtual_pipeline_model_parallel_rank(cur_model_chunk_id)
 
@@ -1099,7 +1111,8 @@ def forward_backward_pipelining_with_interleaving(
                         config=config,
                     )
                 )
-                output_tensor_grads[num_model_chunks - 1].append(output_tensor_grad)
+                if not forward_only:
+                    output_tensor_grads[num_model_chunks - 1].append(output_tensor_grad)
             else:
                 input_tensor = p2p_communication.send_forward_recv_forward(
                     output_tensor, recv_prev=recv_prev, tensor_shape=tensor_shape, config=config
@@ -1179,6 +1192,11 @@ def forward_backward_pipelining_with_interleaving(
 
     # Run 1F1B in steady state.
     for k in range(num_microbatches_remaining):
+        if compile_from_sec_mini_batch is not None:
+            torch.compiler.set_stance(
+                "force_eager" if compile_from_sec_mini_batch and k == 0 else "default"
+            )
+
         # Forward pass.
         forward_k = k + num_warmup_microbatches
 
@@ -1270,7 +1288,7 @@ def forward_backward_pipelining_with_interleaving(
                         recv_next_wait_handle = recv_next_wait_handles.pop(0)
                         recv_next_wait_handle.wait()
 
-            input_tensor_grad = backward_step_helper(backward_k)
+            input_tensor_grad = backward_step_helper(backward_k, output_tensor_grads)
 
             # First virtual stage no activation gradient tensor to send.
             if parallel_state.is_pipeline_first_stage():
@@ -1317,7 +1335,7 @@ def forward_backward_pipelining_with_interleaving(
 
             # Backward pass.
             backward_k = k
-            input_tensor_grad = backward_step_helper(backward_k)
+            input_tensor_grad = backward_step_helper(backward_k, output_tensor_grads)
 
             # Send output_tensor and input_tensor_grad, receive input_tensor
             # and output_tensor_grad.
@@ -1419,7 +1437,7 @@ def forward_backward_pipelining_with_interleaving(
                 if bwd_wait_recv_handles:
                     recv_next_wait_handles.append(bwd_wait_recv_handles.pop("recv_next"))
 
-            input_tensor_grad = backward_step_helper(k)
+            input_tensor_grad = backward_step_helper(k, output_tensor_grads)
 
             # First virtual stage no activation gradient tensor to send.
             if parallel_state.is_pipeline_first_stage():
@@ -1506,6 +1524,9 @@ def forward_backward_pipelining_with_interleaving(
 
     if config.timers is not None:
         config.timers('forward-backward').stop()
+
+    if hasattr(config, 'enable_cuda_graph') and config.enable_cuda_graph:
+        create_cudagraphs()
 
     return forward_data_store
 
@@ -1643,6 +1664,7 @@ def forward_backward_pipelining_without_interleaving(
     forward_only: bool = False,
     collect_non_loss_data: bool = False,
     first_val_step: bool = None,
+    compile_from_sec_mini_batch: bool = None,
 ):
     """Run non-interleaved 1F1B schedule, with communication between pipeline
     stages. Returns dictionary with losses if the last stage, empty dict otherwise."""
@@ -1749,6 +1771,8 @@ def forward_backward_pipelining_without_interleaving(
 
     # Run warmup forward passes.
     for i in range(num_warmup_microbatches):
+        if compile_from_sec_mini_batch is not None:
+            torch.compiler.set_stance("force_eager" if compile_from_sec_mini_batch else "default")
         # Decide to checkpoint all layers' activations of the current micro-batch
         if max_outstanding_backprops is not None:
             checkpoint_activations_microbatch = (
@@ -1791,6 +1815,11 @@ def forward_backward_pipelining_without_interleaving(
     # Run 1F1B in steady state.
     for i in range(num_microbatches_remaining):
         last_iteration = i == (num_microbatches_remaining - 1)
+
+        if compile_from_sec_mini_batch is not None:
+            torch.compiler.set_stance(
+                "force_eager" if compile_from_sec_mini_batch and i == 0 else "default"
+            )
 
         # Decide to checkpoint all layers' activations of the current micro-batch
         if max_outstanding_backprops is not None:
@@ -1903,5 +1932,8 @@ def forward_backward_pipelining_without_interleaving(
 
     if config.timers is not None:
         config.timers('forward-backward').stop()
+
+    if hasattr(config, 'enable_cuda_graph') and config.enable_cuda_graph:
+        create_cudagraphs()
 
     return forward_data_store

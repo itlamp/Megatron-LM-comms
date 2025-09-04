@@ -2,7 +2,6 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-from megatron.core.fusions.fused_dot_product_attention import FusedDotProductAttention
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.core.transformer.attention import (
     CrossAttention,
@@ -67,15 +66,7 @@ if HAVE_TE:
     linear_qkv = TELayerNormColumnParallelLinear
     normalization_class = TENorm
 else:
-    enable_fsdpa = False
-    from intel_transformer_engine.utils import is_gaudi3
-
-    if is_gaudi3() and enable_fsdpa:
-        core_attention_class = IntelTEDotProductAttention
-    elif enable_fsdpa:
-        core_attention_class = FusedDotProductAttention
-    else:
-        core_attention_class = DotProductAttention
+    core_attention_class = IntelTEDotProductAttention
     linear_fc1 = IntelTEColumnParallelLinear
     linear_fc2 = IntelTERowParallelLinear
     linear_kv = IntelTEColumnParallelLinear

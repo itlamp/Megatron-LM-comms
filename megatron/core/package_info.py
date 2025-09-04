@@ -2,8 +2,8 @@
 
 
 MAJOR = 0
-MINOR = 10
-PATCH = 0
+MINOR = 11
+PATCH = 2
 PRE_RELEASE = ''
 
 # Use the following formatting: (major, minor, patch, pre-release)

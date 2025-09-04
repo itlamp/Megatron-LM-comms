@@ -1,9 +1,10 @@
 # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+# Copyright (C) 2025 Intel Corporation
 
 """GPT zero-shot evaluation."""
 
 import math
-
+from functools import partial
 import torch
 
 from megatron.training import get_args
@@ -11,13 +12,12 @@ from megatron.training import print_rank_0, is_last_rank
 from megatron.training import get_tokenizer
 from megatron.core import parallel_state, tensor_parallel
 from megatron.training.checkpointing import load_checkpoint
-from megatron.legacy.model import GPTModel
 from megatron.training import get_model
 from megatron.training.utils import get_ltor_masks_and_position_ids, unwrap_model
 from megatron.core.pipeline_parallel.p2p_communication import recv_forward, send_forward
 from megatron.training.arguments import core_transformer_config_from_args
 from tasks.finetune_utils import build_data_loader
-
+from pretrain_gpt import model_provider
 from .datasets import build_dataset
 
 
@@ -25,26 +25,17 @@ def get_model_provider(eval_metric):
     """Based on evaluation metric set the parallel-output flag and
     return the model provider."""
 
-    def model_provider(pre_process=True, post_process=True):
-        """Build the model."""
+    if eval_metric == 'loss':
+        parallel_output = True
+    elif eval_metric == 'accuracy':
+        parallel_output = False
+    else:
+        raise NotImplementedError('output type for {} evaluation metric '
+                                  'is not supported.'.format(eval_metric))
 
-        config = core_transformer_config_from_args(get_args())
+    wrapped_model_provider = partial(model_provider, parallel_output=parallel_output)
 
-        if eval_metric == 'loss':
-            parallel_output = True
-        elif eval_metric == 'accuracy':
-            parallel_output = False
-        else:
-            raise NotImplementedError('output type for {} evaluation metric '
-                                      'is not supported.'.format(eval_metric))
-
-        print_rank_0('building GPT model ...')
-        model = GPTModel(config, num_tokentypes=0, parallel_output=parallel_output,
-                         pre_process=pre_process, post_process=post_process)
-
-        return model
-
-    return model_provider
+    return wrapped_model_provider
 
 
 def process_batch(batch):

@@ -39,7 +39,7 @@ def parse_arguments():
         default="LLAMA",
         type=str,
         help="Type of the model",
-        choices=["LLAMA", "MIXTRAL"],
+        choices=["LLAMA", "MIXTRAL", "DEEPSEEK"],
     )
     args = parser.parse_args()
     print(f"args = {args}")
@@ -63,11 +63,11 @@ class MLMCheckpoint:
         self.ckpt_folder = folder
 
         tp, pp, ep = (1, 1, 1)
-        if hasattr(args, "data_parallel_size") and hasattr(args, "tensor_model_parallel_size") and hasattr(args, "pipeline_model_parallel_size") and (not model_type == 'MIXTRAL' or hasattr(args, "expert_model_parallel_size")):
+        if hasattr(args, "data_parallel_size") and hasattr(args, "tensor_model_parallel_size") and hasattr(args, "pipeline_model_parallel_size") and (not model_type in ['MIXTRAL', 'DEEPSEEK'] or hasattr(args, "expert_model_parallel_size")):
             dp = args.data_parallel_size
             tp = args.tensor_model_parallel_size
             pp = args.pipeline_model_parallel_size
-            if model_type == 'MIXTRAL':
+            if model_type in ['MIXTRAL', 'DEEPSEEK']:
                 ep = args.expert_model_parallel_size
         else:
             files = glob.glob(os.path.join(folder, 'mp_rank_*'))
@@ -135,7 +135,7 @@ class MLMCheckpoint:
                     for ep_rank in range(ep):
                         folder = self.get_folder(pp, ep, pp_rank, ep_rank, tp_rank)
 
-                        if model_type == "MIXTRAL":
+                        if model_type in ["MIXTRAL", "DEEPSEEK"]:
                             error_message = f"{folder=} does not exist, {pp=}, {tp=}, {ep=}"
                         else:
                             error_message = f"{folder=} does not exist, {pp=}, {tp=}"
@@ -156,7 +156,7 @@ class MLMCheckpoint:
 def show_3d(mlm_checkpoint, model_type):
     parallel_config = mlm_checkpoint.parallel_config
     dp, tp, pp, ep = parallel_config.dp_degree, parallel_config.tp_degree, parallel_config.pp_degree, parallel_config.ep_degree
-    if model_type == 'MIXTRAL':
+    if model_type in ['MIXTRAL', 'DEEPSEEK']:
         print(f"4D configuration: DP={dp} TP={tp} PP={pp}, EP={ep}")
     else:
         print(f"3D configuration: DP={dp} TP={tp} PP={pp}")
@@ -178,7 +178,7 @@ def get_model_optim_rng_patterns_for_non_sharded(model_type):
             r"decoder.final_layernorm.weight",
             r"decoder.final_layernorm.bias",
         ]
-    elif model_type == "MIXTRAL":
+    elif model_type in ["MIXTRAL", "DEEPSEEK"]:
         return [
             r"decoder.layers.+\d+.input_layernorm.weight",
             r"decoder.layers.+\d+.pre_mlp_layernorm.weight",
@@ -230,7 +230,7 @@ def update_model_optim_rng_non_sharded_params(params, model_type, filename, pp_i
         if key not in params:
             params[key] = []
         info = ParamInfo(
-            pp=pp_index, tp=tp_index, dp=-1, ep=(ep_index if model_type == 'MIXRAL' else None), data=sd[key], numel=sd[key].numel()
+            pp=pp_index, tp=tp_index, dp=-1, ep=(ep_index if model_type in ['MIXTRAL', 'DEEPSEEK'] else None), data=sd[key], numel=sd[key].numel()
         )
         params[key].append(info)
     return params
@@ -244,7 +244,7 @@ def verify_model_optim_rng_files(mlm_checkpoint, model_type):
     if not mlm_checkpoint.use_dist_ckpt:
         for pp_index in range(pp):
             for ep_index in range(ep):
-                if model_type == 'MIXTRAL':
+                if model_type in ['MIXTRAL', 'DEEPSEEK']:
                     print(f"\nChecking pp_stage={pp_index}, ep_stage={ep_index}")
                 else:
                     print(f"\nChecking pp_stage={pp_index}")

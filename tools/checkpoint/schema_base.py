@@ -1,4 +1,3 @@
-# Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 """Base model schema."""
@@ -82,11 +81,9 @@ class ModelSchema:
     def set(self, key, model, params):
         self._set(self[key], model, params)
 
-    def set_layer(self, model, layer_idx, params, moe_router_fp32=False):
+    def set_layer(self, model, layer_idx, params):
         schema = self["layer"]
         layer = self._get_layers(model)[layer_idx]
-        if moe_router_fp32:
-            layer.mlp.router.weight.data = layer.mlp.router.weight.data.to(torch.float32)
         self._set(schema, layer, params)
 
     # Other.

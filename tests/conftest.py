@@ -2,12 +2,22 @@
 
 import os
 
+import torch
+
+major, minor, patch = [eval(ss) for ss in torch.__version__.split('+')[0].split('.')]
+
 try:
     import habana_frameworks.torch.gpu_migration
 except:
     pass
 
 import pytest
+
+
+def is_torch_min_version(check_major, check_minor, check_patch):
+    if major >= check_major and minor >= check_minor and patch >= check_patch:
+        return True
+    return False
 
 
 # Key in the expected_fail_tests can be an exact node_id or module or directory
@@ -48,6 +58,8 @@ unit_tests_to_deselect = {
     ],
     'https://jira.habana-labs.com/browse/SW-222660': [
         'tests/unit_tests/dist_checkpointing/models/test_mamba.py',
+        'tests/unit_tests/inference/test_modelopt_module_spec.py::TestModelOptMambaModel::test_sharded_state_dict_restore',
+        'tests/unit_tests/inference/test_modelopt_module_spec.py::TestModelOptMambaModel::test_inference',
         'tests/unit_tests/ssm/test_mamba_block.py',
         'tests/unit_tests/ssm/test_mamba_hybrid_layer_allocation.py',
         'tests/unit_tests/ssm/test_mamba_layer.py',
@@ -71,11 +83,16 @@ unit_tests_to_deselect = {
         'tests/unit_tests/dist_checkpointing/test_optimizer.py::TestOptimizerResharding::test_chained_optimizer_resharding[src_tp_pp_exp2-dest_tp_pp_exp2-True-False-False-True-True]',
         'tests/unit_tests/dist_checkpointing/test_optimizer.py::TestOptimizerResharding::test_chained_optimizer_resharding[src_tp_pp_exp2-dest_tp_pp_exp2-False-False-True-True-True]',
         'tests/unit_tests/dist_checkpointing/test_optimizer.py::TestOptimizerResharding::test_chained_optimizer_resharding[src_tp_pp_exp2-dest_tp_pp_exp2-False-False-False-True-True]',
-        'tests/unit_tests/models/test_llava_model.py::TestLLaVAModelTokenParallel::test_process_embedding_token_parallel[1-8-True]',
-        'tests/unit_tests/models/test_llava_model.py::TestLLaVAModelTokenParallel::test_process_embedding_token_parallel[2-4-True]',
+        'tests/unit_tests/models/test_llava_model.py::TestLLaVAModelTokenParallel::test_process_embedding_token_parallel[1-8-True-True]',
     ],
     'https://jira.habana-labs.com/browse/SW-222893': [
-        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[False-False]'
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[1-False-False-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-1-False-False-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-1-False-False-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-2-False-False-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-2-False-False-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-False-False-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-False-False-False]',
     ],
     'https://jira.habana-labs.com/browse/SW-222894': [
         'tests/unit_tests/export/trtllm/test_distributed_fp8.py::TestTRTLLMSingleDeviceConverterFP8::test_get_model_weights_converter',
@@ -88,12 +105,6 @@ unit_tests_to_deselect = {
     'https://jira.habana-labs.com/browse/SW-222896': [
         'tests/unit_tests/tensor_parallel/test_initialization.py::Test::test_te_col_init',
         'tests/unit_tests/tensor_parallel/test_initialization.py::Test::test_te_row_init',
-    ],
-    'https://jira.habana-labs.com/browse/SW-222898': [
-        'tests/unit_tests/transformer/test_multi_latent_attention.py::TestParallelMLAAttention::test_constructor',
-        'tests/unit_tests/transformer/test_multi_latent_attention.py::TestParallelMLAAttention::test_cpu_forward',
-        'tests/unit_tests/transformer/test_multi_latent_attention.py::TestParallelMLAAttention::test_gpu_forward',
-        'tests/unit_tests/transformer/test_multi_latent_attention.py::TestParallelMLAAttention::test_checkpointed_gpu_forward',
     ],
     'https://jira.habana-labs.com/browse/SW-222899': [
         'tests/unit_tests/models/test_llava_model.py::TestLLaVAModelSigLIP::test_constructor'
@@ -120,8 +131,32 @@ unit_tests_to_deselect = {
         'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_bucket_sizes[True-False-True-18000]',
         'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_bucket_sizes[True-False-True-18050]',
         'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_bucket_sizes[True-False-True-20000]',
-        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[False-True]',
-        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[True-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[1-False-False-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[1-False-True-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[1-True-False-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[1-True-True-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[2-True-False-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[2-True-True-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[2-False-False-True]',
+        'tests/unit_tests/distributed/test_param_and_grad_buffer.py::test_grad_sync[2-False-True-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-2-True-False-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-2-True-True-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-2-True-True-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[1-2-True-False-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-False-False-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-False-True-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-False-True-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-True-False-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-True-False-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-True-True-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-1-True-True-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-False-False-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-False-True-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-False-True-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-True-False-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-True-False-True]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-True-True-False]',
+        'tests/unit_tests/distributed/test_grad_sync_with_expert_parallel.py::test_grad_sync[2-2-True-True-True]',
     ],
     'https://jira.habana-labs.com/browse/SW-201767': [
         'tests/unit_tests/models/test_clip_vit_model.py::TestCLIPViTModel::test_constructor',
@@ -243,6 +278,35 @@ unit_tests_to_deselect = {
     'https://jira.habana-labs.com/browse/SW-214828': [
         'tests/unit_tests/models/test_llava_model.py::TestLLaVAModel::test_forward'
     ],
+    'https://jira.habana-labs.com/browse/SW-225513': [
+        'tests/unit_tests/inference/test_modelopt_module_spec.py::TestModelOptGPTModel::test_sharded_state_dict_restore'
+    ],
+    'https://jira.habana-labs.com/browse/SW-225515': [
+        'tests/unit_tests/inference/text_generation_controllers/test_simple_text_generation_controller.py::TestTextGenerationController::test_generate_all_output_tokens_static_batch[dtype0]',
+        'tests/unit_tests/inference/text_generation_controllers/test_simple_text_generation_controller.py::TestTextGenerationController::test_generate_all_output_tokens_static_batch[dtype1]',
+    ],
+    'https://jira.habana-labs.com/browse/SW-225516': [
+        'tests/unit_tests/inference/text_generation_controllers/test_vlm_text_generation_controller.py::TestVLMTextGenerationController::test_generate_all_output_tokens_static_batch'
+    ],
+    'https://jira.habana-labs.com/browse/SW-225546': [
+        'tests/unit_tests/test_parallel_state.py::test_different_initialize_order_unconsistency[src_tp_pp3-2]',
+        'tests/unit_tests/test_parallel_state.py::test_different_initialize_order_unconsistency[src_tp_pp4-2]',
+        'tests/unit_tests/test_parallel_state.py::test_different_initialize_order_unconsistency[src_tp_pp5-2]',
+    ],
+    'DONT-FIX': [
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file47---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file147---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file152---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file153---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file155---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file156---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file186---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file187---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file189---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file190---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file191---log-memory-to-tensorboard]",
+        "tests/unit_tests/test_model_configs.py::test_model_config_tracks_memory[yaml_file192---log-memory-to-tensorboard]",
+    ],
 }
 
 unit_tests_to_deselect_eager_only = {
@@ -258,7 +322,6 @@ unit_tests_to_deselect_eager_only = {
         'tests/unit_tests/dist_checkpointing/models/test_t5_model.py::TestT5ModelReconfiguration::test_parallel_reconfiguration_e2e[True-src_tp_pp_encpp5-dest_tp_pp_encpp5-t5-local-local]',
         'tests/unit_tests/dist_checkpointing/test_serialization.py::TestSerialization::test_remove_sharded_tensors',
         'tests/unit_tests/dist_checkpointing/test_serialization.py::TestSerialization::test_empty_load',
-        'tests/unit_tests/transformer/moe/test_a2a_token_dispatcher.py::TestAlltoAllDispatcher::test_forward_backward[8-1]',
     ],
     'https://jira.habana-labs.com/browse/SW-216976': [
         'tests/unit_tests/dist_checkpointing/models/test_bert_model.py',
@@ -306,8 +369,10 @@ unit_tests_to_deselect_eager_only = {
     'https://jira.habana-labs.com/browse/SW-217295': [
         'tests/unit_tests/dist_checkpointing/test_serialization.py::TestSerialization::test_tensor_shape_mismatch'
     ],
+    'https://jira.habana-labs.com/browse/SW-225547': [
+        'tests/unit_tests/models/test_llava_model.py::TestLLaVAModel::test_forward_fsdp'
+    ],
 }
-
 
 unit_tests_to_deselect_lazy_only = {
     'https://jira.habana-labs.com/browse/SW-206540': [
@@ -322,6 +387,10 @@ unit_tests_to_deselect_lazy_only = {
     ]
 }
 
+unit_tests_to_deselect_sim_only = {
+    'SW-TODO-Flaky': ['tests/unit_tests/dist_checkpointing/', 'tests/unit_tests/distributed/'],
+    'SW-SLOW-TESTS': ['tests/unit_tests/models/'],
+}
 
 all_xfails_dict = {
     node_id: jira for jira in unit_tests_to_deselect for node_id in unit_tests_to_deselect[jira]
@@ -339,10 +408,19 @@ lazy_only_xfail_dict = {
     for node_id in unit_tests_to_deselect_lazy_only[jira]
 }
 
-if os.getenv("PT_HPU_LAZY_MODE") == "0":
+sim_only_xfail_dict = {
+    node_id: jira
+    for jira in unit_tests_to_deselect_sim_only
+    for node_id in unit_tests_to_deselect_sim_only[jira]
+}
+
+if os.getenv("PT_HPU_LAZY_MODE", "0") == "0":
     all_xfails_dict.update(eager_only_xfail_dict)
 else:
     all_xfails_dict.update(lazy_only_xfail_dict)
+
+if os.getenv("MLM_DUT", "0") == "SIMULATOR":
+    all_xfails_dict.update(sim_only_xfail_dict)
 
 
 def pytest_collection_modifyitems(config, items):

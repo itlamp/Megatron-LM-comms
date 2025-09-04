@@ -29,11 +29,25 @@ TP=${HL_TP:-8}
 PP=${HL_PP:-1}
 CP=${HL_CP:-1}
 MOE_EP=${HL_MOE_EP:-}
-MOE_TP=${HL_MOE_TP:-}
+ETP=${HL_ETP:-0}
 SEQ_PARALLEL=${HL_SEQ_PARALLEL:-1}
 HOSTSFILE=${HL_HOSTSFILE:-}
 KILL_SWITCH_FILE=${HL_KILL_SWITCH:-}
 DIST_OPTIMIZER=${HL_DIST_OPTIMIZER:-0}
+SSH_PORT=${HL_SSH_PORT:-22}
+HNIC=${HL_HNIC:-0}
+
+# asserting that NUM_NODES is greater than 1 when HNIC is set to 1
+if [ "${HNIC}" = "1" ] && [ "${NUM_NODES}" -le 1 ]; then
+  echo "Exiting: Host Nic is enabled and NUM_NODES is not greater than 1"
+  exit 1
+fi
+#Host NIC variables
+if [[ "${HNIC}" -eq "1"  ]]; then
+    HCCL_OVER_OFI=${HL_HCCL_OVER_OFI:-1}
+    HCCL_GAUDI_DIRECT=${HL_HCCL_GAUDI_DIRECT:-1}
+    FI_PROVIDER=${HL_FI_PROVIDER:-verbs}
+fi
 
 MIXTRAL_MODEL=${HL_MIXTRAL_MODEL:-8x7b}
 MICRO_BATCH=${HL_MICRO_BATCH:-1}
@@ -114,6 +128,7 @@ FP8_FORMAT=${HL_FP8_FORMAT:-hybrid} # hybrid or e5m2
 FP8_MARGIN=${HL_FP8_MARGIN:-0}
 FP8_AMAX_COMPUTE_ALGO=${HL_FP8_AMAX_COMPUTE_ALGO:-max} # max or most_recent
 FP8_COVERAGE=${HL_FP8_COVERAGE:-"mlp_row_parallel=False"}
+FP8_FORCE_SEQ_MOE=${HL_FP8_FORCE_SEQ_MOE:-0}
 MOE_GROUPED_GEMM=${HL_MOE_GROUPED_GEMM:-0}
 
 NUM_WORKERS=${HL_NUM_WORKERS:-0}
@@ -245,7 +260,7 @@ if [ -z "$OUTPUT_DIR" ]; then
     if [ -z "$EXP_NAME" ]; then
         EXP_NAME="default"
     fi
-    OUTPUT_DIR=${OUTPUT_DIR_PREFIX}/out/mixtral_${MIXTRAL_MODEL}/${EXP_NAME}_ckpact${CKP_ACT}_nl${NUM_LAYERS}_hs${HIDDEN_SIZE}_ffn${FFN_HIDDEN_SIZE}_moe_exp${MOE_NUM_EXPERTS}_gb${GLOBAL_BATCH}_mb${MICRO_BATCH}_sp${SEQ_PARALLEL}_D${DP}_T${TP}_P${PP}_E${MOE_EP}_devices${NUM_DEVICES}_${RUNTIME}
+    OUTPUT_DIR=${OUTPUT_DIR_PREFIX}/out/mixtral_${MIXTRAL_MODEL}/${EXP_NAME}_ckpact${CKP_ACT}_nl${NUM_LAYERS}_hs${HIDDEN_SIZE}_ffn${FFN_HIDDEN_SIZE}_moe_exp${MOE_NUM_EXPERTS}_gb${GLOBAL_BATCH}_mb${MICRO_BATCH}_sp${SEQ_PARALLEL}_D${DP}_T${TP}_C${CP}_P${PP}_E${MOE_EP}_ET${ETP}_devices${NUM_DEVICES}_${RUNTIME}
 fi
 
 if [ -z "$CHECKPOINTS_DIR" ]; then
@@ -268,7 +283,7 @@ mkdir -p ${TENSORBOARD_DIR}
 # Create command
 
 # configure multi-node/multi-hpu command
-if [ "$NUM_NODES" -ne "1" -a -z "$HOSTSFILE" ]; then
+if [ "$LAUNCHER_TYPE" = "mpirun" -a "$NUM_NODES" -ne "1" -a -z "$HOSTSFILE" ]; then
     HOSTSFILE=${MEGATRON_LM_ROOT}/examples/hostsfile
     if [ -f $HOSTSFILE ]; then
         cat /dev/null > ${HOSTSFILE}
@@ -287,6 +302,8 @@ CMD=""
 if [ "$LAUNCHER_TYPE" = "mpirun" ]; then
     CMD="$CMD mpirun"
     CMD="$CMD --allow-run-as-root"
+    CMD="${CMD} --mca plm_rsh_args -p${SSH_PORT}"
+    [[ -n "${MPI_ROOT}" ]] && CMD="$CMD --prefix ${MPI_ROOT}"
     CMD="$CMD -n ${NUM_DEVICES}"
     [[ -n "$HL_PE" ]] && __MAP_BY="socket:PE=${HL_PE}"
     [[ -n "$HL_PE" ]] && [[ -n "${HL_PPR}" ]] && __MAP_BY="ppr:${HL_PPR}:socket:PE=${HL_PE}"
@@ -294,6 +311,9 @@ if [ "$LAUNCHER_TYPE" = "mpirun" ]; then
         CMD="${CMD} --bind-to core --rank-by core --report-bindings --map-by ${__MAP_BY}"
     else
         CMD="${CMD} --bind-to none"
+    fi
+    if [[ "${HNIC}" -eq "1" ]]; then
+        CMD="${CMD} -x HCCL_OVER_OFI -x HCCL_GAUDI_DIRECT -x FI_PROVIDER -x LD_LIBRARY_PATH"
     fi
     CMD="$CMD -x PT_HPU_GPU_MIGRATION=$PT_HPU_GPU_MIGRATION"
     CMD="${CMD} -x PT_HPU_LAZY_MODE=${USE_LAZY_MODE}"
@@ -318,6 +338,11 @@ elif [ "$LAUNCHER_TYPE" = "torchrun" ]; then
     fi
     export PT_HPU_GPU_MIGRATION=$PT_HPU_GPU_MIGRATION
     export PT_HPU_LAZY_MODE=${USE_LAZY_MODE}
+    if [[ "${HNIC}" -eq "1" ]]; then
+        export HCCL_OVER_OFI=${HCCL_OVER_OFI}
+        export HCCL_GAUDI_DIRECT=${HCCL_GAUDI_DIRECT}
+        export FI_PROVIDER=${FI_PROVIDER}
+    fi
     if [ "${TORCH_COMPILE_DISABLE}" = "1" ]; then
         export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE}
     fi
@@ -398,6 +423,7 @@ CMD="${CMD} \
     --num-workers ${NUM_WORKERS} \
     --use-fast-softmax ${USE_FAST_SOFTMAX} \
     --distributed-timeout-minutes 60 \
+    --verify-checkpoint-model-type MIXTRAL \
     "
 
 # -------------
@@ -408,7 +434,7 @@ fi
 
 # -------------
 # GroupedMLP
-if [ "$MOE_GROUPED_GEMM" -eq 1 ] || [ "$FP8" -eq 1 ]; then
+if [ "$MOE_GROUPED_GEMM" -eq 1 ] || { [ "$FP8" -eq 1 ] && [ "$FP8_FORCE_SEQ_MOE" -eq 0 ]; }; then
     CMD="${CMD} --moe-grouped-gemm"
 fi
 
@@ -484,8 +510,10 @@ if [ $SEQ_PARALLEL -eq 1 ]; then
     CMD="${CMD} --sequence-parallel"
 fi
 
-if [ $MOE_TP -eq 1 ]; then
+if [ $ETP -eq 0 ]; then
     CMD="${CMD} --expert-tensor-parallel-size ${TP}"
+elif [ $ETP -gt 0 ]; then
+    CMD="${CMD} --expert-tensor-parallel-size ${ETP}"
 fi
 
 if [ $CKP_ACT -eq 1 ]; then

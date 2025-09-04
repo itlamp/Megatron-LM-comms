@@ -64,6 +64,9 @@ export PYTHONPATH=$MEGATRON_LM_ROOT:$PYTHONPATH
 * Install the required packages using pip:
   ```bash
   pip install -r megatron/core/requirements.txt
+  
+  # For 1.20.1 release, also run
+  pip install -r megatron/core/requirements_1.20.txt
   ```
 
 * To run training on more than 128 cards, apply the below configuration changes:
@@ -76,16 +79,28 @@ export PYTHONPATH=$MEGATRON_LM_ROOT:$PYTHONPATH
 
 
 # Supported Configurations
-| Model                                       | Mode        | Intel Gaudi software Version | PyTorch Version | Validated on Gaudi 2 | Validated on Gaudi 3 |
-| --------------------------------------------| ----------- | ---------------------------- | --------------- | -------------------- | -------------------- |
-| [LLaMA 3.1](examples/llama/README.md)       | Pretraining | 1.21.3                       | 2.6.0           | :heavy_check_mark:   | :heavy_check_mark:*  |
-| [Mixtral 8x7B](examples/mixtral/README.md)  | Pretraining | 1.21.3                       | 2.6.0           | :heavy_check_mark:** |                      |
+| Model                                       | Mode        | Intel Gaudi software Version | PyTorch Version | Validated on Gaudi 2 | Validated on Gaudi 3  |
+| --------------------------------------------| ----------- | ---------------------------- | --------------- | -------------------- | --------------------- |
+| [LLaMA 3.1](examples/llama/README.md)       | Pretraining | 1.22.0                       | 2.7.1           | :heavy_check_mark:   | :heavy_check_mark:*   |
+| [Mixtral 8x7B](examples/mixtral/README.md)  | Pretraining | 1.22.0                       | 2.7.1           | :heavy_check_mark:** | :heavy_check_mark:*** |
+| [DeepSeek V3](examples/deepseek/README.md)  | Pretraining | 1.22.0                       | 2.7.1           | :heavy_check_mark:** |                       |
+
 
 *Sporadic numerical instability can occur when training with fp8 precision.
 
 **Only BF16 configurations are currently enabled.
 
+***Only BF16, lazy and eager configurations are currently enabled.
+
 # Changelog
+## 1.22.0
+- Rebased code to upstream [core_r0.11.0](https://github.com/NVIDIA/Megatron-LM/tree/core_r0.11.0) release.
+- Added support for zeroshot wikitext and lambada evaluation of Llama models and and usage is available [here](./tasks/zeroshot_gpt/README.md).
+- Added mpirun --prefix ${MPI_ROOT} option to LLaMA and Mixtral examples.
+- Added Host NIC settings support for LLaMA and  Mixtral examples.
+- Added DeepSeek V3 Model support with bfloat16 data type.
+- Added torch.compile support for Mixtral (on Gaudi 2).
+
 ## 1.21.0
 - Rebased code to upstream [core_r0.10.0](https://github.com/NVIDIA/Megatron-LM/tree/core_r0.10.0) release.
 - Added different levels of memory optimization for exporting or loading distributed optimizer states, controlled via an argument.
@@ -119,5 +134,5 @@ Major changes done to the original code from [NVIDIA/Megatron-LM](https://github
 
 # Known Issues
 * Only recipes mentioned in this README are supported and verified.
-* For certain configurations, if the first run of a workload may show lower performance, recommended to stop and restart the run.
-* Minor variations may be visible in the performance metrics reported every step, expected to stabilize over time.
+* For certain configurations, the first run of a workload may show lower performance. In such cases, it is recommended to stop and restart the run.
+* Minor variations may be visible in the performance metrics reported at every step, but they are expected to stabilize over time.

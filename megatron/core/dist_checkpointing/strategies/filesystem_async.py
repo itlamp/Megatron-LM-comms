@@ -1,12 +1,16 @@
 # Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 
 """ Storage writer for PyT Distributed format allowing asynchronous save. """
+import dataclasses
 import gc
 import logging
 import os
 import queue
 from contextlib import contextmanager
+from functools import partial
+from heapq import heappop, heappush
 from itertools import chain
+from operator import itemgetter
 from pathlib import Path
 from time import time
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -76,6 +80,8 @@ class FileSystemWriterAsync(FileSystemWriter):
                 'single_file_per_rank flag not supported for FileSystemWriterAsync'
             )
 
+        self.can_run_decentralized_global_plan: bool = True
+
         # Intermediate state between preparation and finalization
         self.write_buckets: Optional[List[WriteBucket]] = None
         self.results_queue: Optional[mp.Queue] = None
@@ -99,7 +105,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.thread_count > 1
             ), "thread_count must be at least 2 if separation_hint is provided"
         bins = self.thread_count // 2 if self.separation_hint is not None else self.thread_count
-        item_buckets = _split_by_size_and_type(bins, plan.items, self.separation_hint)
+        item_buckets = _split_by_size_and_type(bins, plan.items)
         logger.debug(f"bucket_prep, time: {time() - start}")
 
         start = time()
@@ -113,6 +119,18 @@ class FileSystemWriterAsync(FileSystemWriter):
             file_count += 1
             return file_name
 
+        def _copy_to_cpu(ten: torch.Tensor):
+            """Pinned D2H copy (or a simple clone() if already on the CPU).
+
+            Makes sure we perform a `clone` only if we detect incontiguous storage,
+            so that we don't blow up host memory unnecessarily.
+            """
+            ten = ten.detach()
+            if ten.device.type != "cpu":
+                return ten.to("cpu", non_blocking=True)
+            is_view = ten.untyped_storage().size() != ten.numel() * ten.itemsize
+            return ten.clone() if is_view else ten
+
         # Prepare bytes / tensor data in each bucket, which will be assigned to each writer process
         self.write_buckets = []
         for group_name, group_buckets in _split_by_separation_hint(
@@ -125,7 +143,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     if item.type == WriteItemType.BYTE_IO
                 ]
                 tensor_data = [
-                    (item, planner.resolve_data(item).detach().to("cpu", non_blocking=True))
+                    (item, _copy_to_cpu(planner.resolve_data(item)))
                     for item in bucket
                     if item.type != WriteItemType.BYTE_IO
                 ]
@@ -158,12 +176,16 @@ class FileSystemWriterAsync(FileSystemWriter):
         """
         if not self.write_buckets:
             return None, ()
-        return (self.write_preloaded_data_multiproc, (self.write_buckets, self.results_queue))
+        transform_list = [self.transforms] if hasattr(self, 'transforms') else []
+        return (
+            partial(self.write_preloaded_data_multiproc, transform_list),
+            (self.write_buckets, self.results_queue),
+        )
 
     @staticmethod
     @_disable_gc()
     def write_preloaded_data_multiproc(
-        write_buckets: List[WriteBucket], global_results_queue: mp.Queue
+        transform_list, write_buckets: List[WriteBucket], global_results_queue: mp.Queue
     ) -> None:
         """
         Performs saving data to storage with multiple processes.
@@ -197,7 +219,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 count_queue.put(i)
                 p_list.append(
                     ctx.Process(
-                        target=FileSystemWriterAsync.write_preloaded_data,
+                        target=partial(FileSystemWriterAsync.write_preloaded_data, transform_list),
                         args=(i, write_bucket, local_results_queue, count_queue, True),
                     )
                 )
@@ -252,6 +274,7 @@ class FileSystemWriterAsync(FileSystemWriter):
     @staticmethod
     @_disable_gc()
     def write_preloaded_data(
+        transform_list,
         local_proc_idx: int,
         write_bucket: WriteBucket,
         results_queue: mp.SimpleQueue,
@@ -278,11 +301,15 @@ class FileSystemWriterAsync(FileSystemWriter):
             file_name, storage_key, (bytes_data, tensor_data) = write_bucket
             with open(file_name, "wb") as stream:
                 for write_item, data in bytes_data:
-                    local_results.append(_write_item(stream, data, write_item, storage_key))
+                    local_results.append(
+                        _write_item(*transform_list, stream, data, write_item, storage_key)
+                    )
 
                 for write_item, tensor in tensor_data:
                     assert tensor.is_cpu
-                    local_results.append(_write_item(stream, tensor, write_item, storage_key))
+                    local_results.append(
+                        _write_item(*transform_list, stream, tensor, write_item, storage_key)
+                    )
 
                 if use_fsync:
                     os.fsync(stream.fileno())
@@ -334,10 +361,23 @@ class FileSystemWriterAsync(FileSystemWriter):
             )
         return list(chain.from_iterable(write_results.values()))
 
+    def prepare_decentralized_global_plan(self, local_plan: SavePlan) -> SavePlan:
+        """Instead of assigning indices by plan order, uses PyT rank (same outcome).
 
-def _split_by_size_and_type(
-    bins: int, items: List[WriteItem], separation_hint: Optional[str] = None
-) -> List[List[WriteItem]]:
+        Args:
+            local_plan (SavePlan): local plan to turn to a global plan
+                (without interactions with other ranks)
+
+        Returns:
+            SavePlan - locally transformed plan equivalent to the plan that would be
+                created by the coordinator
+        """
+        return dataclasses.replace(
+            local_plan, storage_data=_StoragePrefix(f"__{torch.distributed.get_rank()}_")
+        )
+
+
+def _split_by_size_and_type(bins: int, items: List[WriteItem]) -> List[List[WriteItem]]:
     """
     Splits write items according to item size into close to uniform bins.
 
@@ -353,24 +393,32 @@ def _split_by_size_and_type(
     if bins == 1:
         return [items]
 
-    bytes_items = [wi for wi in items if wi.type == WriteItemType.BYTE_IO]
-    tensor_items = [wi for wi in items if wi.type != WriteItemType.BYTE_IO]
+    bytes_items: List[WriteItem] = []
+    tensor_items: List[WriteItem] = []
+    for wi in items:
+        container = bytes_items if wi.type == WriteItemType.BYTE_IO else tensor_items
+        container.append(wi)
 
     buckets: List[List[WriteItem]] = [[] for _ in range(bins)]
     bucket_sizes = [0 for _ in range(bins)]
-
-    tensor_items.sort(key=_item_size, reverse=True)
 
     # Assign bytes with a simple round-robin
     for i, item in enumerate(bytes_items):
         buckets[i % bins].append(item)
 
-    # Then, assign tensors according to their sizes
-    for item in tensor_items:
-        # TODO replace with headq
-        idx = min(enumerate(bucket_sizes), key=lambda x: x[1])[0]
-        buckets[idx].append(item)
-        bucket_sizes[idx] += _item_size(item)
+    # Sort tensor items by size in decreasing order once and store the size with item
+    sized_tensors = [(item, _item_size(item)) for item in tensor_items]
+    sized_tensors.sort(key=itemgetter(1), reverse=True)
+
+    # Use a min heap for bin assignment
+    # Store (total_size_of_bin, bin_index) tuples
+    heap: List[Tuple[int, int]] = [(0, i) for i in range(bins)]
+
+    # Assign tensors using heap
+    for item, size in sized_tensors:
+        total_bin_size, bin_idx = heappop(heap)
+        buckets[bin_idx].append(item)
+        heappush(heap, (total_bin_size + size, bin_idx))
 
     return buckets
 

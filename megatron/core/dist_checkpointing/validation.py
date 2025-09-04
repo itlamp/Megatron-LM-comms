@@ -1,4 +1,6 @@
+# Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+
 import logging
 from collections import Counter, defaultdict
 from enum import Enum
@@ -494,7 +496,7 @@ def _validate_sharding_for_key_flattened(tensors_by_shard):
         all_slices.append((sharding.flattened_range.start, sharding.flattened_range.stop))
 
     starts, stops = map(np.asarray, zip(*sorted(all_slices)))
-    expected_size = np.product(local_shape)
+    expected_size = np.prod(local_shape)
     if starts[0] != 0 or stops[-1] != expected_size or not np.all(starts[1:] == stops[:-1]):
         raise CheckpointingException(
             f'Flattened ranges dont cover the whole shard {tensors_by_shard[0]} of size {expected_size}. Ranges: {(starts, stops)}'

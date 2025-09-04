@@ -1,6 +1,8 @@
 # Copyright (C) 2025 Intel Corporation
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
+from typing import Optional
+
 try:
     from megatron.core.extensions.transformer_engine import (
         TEDotProductAttention,
@@ -24,8 +26,7 @@ except:
     pass
 
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-from megatron.core.fusions.fused_dot_product_attention import FusedDotProductAttention
-from megatron.core.models.gpt.gpt_layer_specs import _get_mlp_module_spec
+from megatron.core.models.gpt.gpt_layer_specs import get_mlp_module_spec
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
@@ -46,15 +47,15 @@ except ImportError:
 
     from megatron.core.transformer.torch_norm import WrappedTorchNorm
 
-    warnings.warn(f'Apex is not installed. Falling back to Torch Norm')
+    warnings.warn('Apex is not installed. Falling back to Torch Norm')
     LNImpl = WrappedTorchNorm
 
 
 def decoder_model_with_transformer_engine_default_spec(
-    num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
+    num_experts: Optional[int] = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
 ) -> ModuleSpec:
     """LLava decoder TE spec (uses Transformer Engine components)."""
-    mlp = _get_mlp_module_spec(
+    mlp = get_mlp_module_spec(
         use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm
     )
     if HAVE_TE:
@@ -63,15 +64,7 @@ def decoder_model_with_transformer_engine_default_spec(
         linear_qkv = TELayerNormColumnParallelLinear
         normalization_class = TENorm
     else:
-        from intel_transformer_engine.utils import is_gaudi3
-
-        enable_fsdpa = False
-        if is_gaudi3() and enable_fsdpa:
-            core_attention_class = IntelTEDotProductAttention
-        elif enable_fsdpa:
-            core_attention_class = FusedDotProductAttention
-        else:
-            core_attention_class = DotProductAttention
+        core_attention_class = IntelTEDotProductAttention
         linear_proj = IntelTERowParallelLinear
         linear_qkv = IntelTEColumnParallelLinear
         normalization_class = IntelTENorm
@@ -99,10 +92,10 @@ def decoder_model_with_transformer_engine_default_spec(
 
 
 def decoder_model_with_local_default_spec(
-    num_experts: int = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
+    num_experts: Optional[int] = None, moe_grouped_gemm: bool = False, qk_layernorm: bool = False
 ) -> ModuleSpec:
     """LLava decoder local spec."""
-    mlp = _get_mlp_module_spec(
+    mlp = get_mlp_module_spec(
         use_te=False, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm
     )
     return ModuleSpec(

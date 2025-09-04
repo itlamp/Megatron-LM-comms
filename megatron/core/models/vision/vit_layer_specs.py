@@ -23,7 +23,6 @@ except:
     pass
 
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-from megatron.core.fusions.fused_dot_product_attention import FusedDotProductAttention
 from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
@@ -45,7 +44,7 @@ except ImportError:
 
     from megatron.core.transformer.torch_norm import WrappedTorchNorm
 
-    warnings.warn(f'Apex is not installed. Falling back to Torch Norm')
+    warnings.warn('Apex is not installed. Falling back to Torch Norm')
     LNImpl = WrappedTorchNorm
 
 
@@ -59,16 +58,9 @@ def get_vit_layer_with_transformer_engine_spec() -> ModuleSpec:
         core_attention_class = TEDotProductAttention
         linear_qkv = TELayerNormColumnParallelLinear
         linear_proj = TERowParallelLinear
+        normalization_class = None
     else:
-        enable_fsdpa = False
-        from intel_transformer_engine.utils import is_gaudi3
-
-        if is_gaudi3() and enable_fsdpa:
-            core_attention_class = IntelTEDotProductAttention
-        elif enable_fsdpa:
-            core_attention_class = FusedDotProductAttention
-        else:
-            core_attention_class = DotProductAttention
+        core_attention_class = IntelTEDotProductAttention
         linear_qkv = IntelTEColumnParallelLinear
         linear_proj = IntelTERowParallelLinear
         normalization_class = IntelTENorm

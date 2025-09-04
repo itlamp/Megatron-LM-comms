@@ -387,7 +387,10 @@ def convert_layers(
 
             # Extract the layer index and operation name of the MoE layer.
             if is_expert_layer:
-                moe_layer_idx = int(match.group(4)) + ep_rank * num_layers_per_ep_stage
+                if moe_dynamic_hpu:
+                    moe_layer_idx = int(match.group(4))
+                else:
+                    moe_layer_idx = int(match.group(4)) + ep_rank * num_layers_per_ep_stage
 
             # The name of the layer.
             layer_name = f"model.layers.{layer_idx}"
@@ -846,6 +849,11 @@ def convert_checkpoint_from_megatron_to_transformers(args):
     max_shard_size = (
         int(args.max_shard_size) if args.max_shard_size.isdigit() else args.max_shard_size
     )
+
+    from megatron.core.utils import is_lazy_mode
+    if not is_lazy_mode():
+        for key in output_state_dict:
+            output_state_dict[key] = output_state_dict[key].clone()
 
     save_torch_state_dict(
         state_dict=output_state_dict, save_directory=args.save_path, max_shard_size=max_shard_size

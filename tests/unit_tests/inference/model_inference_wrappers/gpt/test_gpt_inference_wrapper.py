@@ -1,6 +1,5 @@
 from argparse import Namespace
 
-import pytest
 import torch
 
 from megatron.core import parallel_state
@@ -62,7 +61,6 @@ class TestGPTInferenceWrapper:
         Utils.destroy_model_parallel()
 
     # This will call the inference_wrapped_model.forward_pass_with_pipeline_parallel_small_input_batch()
-    @pytest.mark.flaky
     def test_inference_pipeline_parallel_small_size(self):
         self.setup_model(tensor_parallel_size=2, pipeline_parallel_size=2)
 
@@ -72,10 +70,17 @@ class TestGPTInferenceWrapper:
             .cuda()
         )
         self.inference_wrapped_model.prep_model_for_inference(prompts_tokens=batch_prompt_tokens)
+        inference_input = self.inference_wrapped_model.prep_inference_input(
+            prompts_tokens=batch_prompt_tokens
+        )
 
-        inference_input = self.inference_wrapped_model.get_batch_for_context_window(0, 5)
+        inference_input_for_context_window = (
+            self.inference_wrapped_model.get_batch_for_context_window(inference_input, 0, 5)
+        )
 
-        logits = self.inference_wrapped_model.run_one_forward_step(inference_input)
+        logits = self.inference_wrapped_model.run_one_forward_step(
+            inference_input_for_context_window
+        )
         # Logits are not returned in all ranks in PP
         if parallel_state.is_pipeline_last_stage():
             assert logits.shape == (
@@ -85,7 +90,6 @@ class TestGPTInferenceWrapper:
             ), f"Shape mismatch . Expected {(self.batch_size, 5, self.vocab_size)}, but got {logits.shape}"
 
     # This will call the inference_wrapped_model.forward_pass_with_pipeline_parallel_large_input_batch()
-    @pytest.mark.flaky
     def test_inference_pipeline_parallel_large__size(self):
         self.setup_model(tensor_parallel_size=2, pipeline_parallel_size=2)
 
@@ -95,10 +99,17 @@ class TestGPTInferenceWrapper:
             .cuda()
         )
         self.inference_wrapped_model.prep_model_for_inference(prompts_tokens=batch_prompt_tokens)
+        inference_input = self.inference_wrapped_model.prep_inference_input(
+            prompts_tokens=batch_prompt_tokens
+        )
 
-        inference_input = self.inference_wrapped_model.get_batch_for_context_window(0, 10)
+        inference_input_for_context_window = (
+            self.inference_wrapped_model.get_batch_for_context_window(inference_input, 0, 10)
+        )
 
-        logits = self.inference_wrapped_model.run_one_forward_step(inference_input)
+        logits = self.inference_wrapped_model.run_one_forward_step(
+            inference_input_for_context_window
+        )
 
         if parallel_state.is_pipeline_last_stage():
             assert logits.shape == (
@@ -107,7 +118,6 @@ class TestGPTInferenceWrapper:
                 self.vocab_size,
             ), f"Shape mismatch . Expected {(self.batch_size,10, self.vocab_size)}, but got {logits.shape}"
 
-    @pytest.mark.flaky
     def test_inference_only_tensor_parallel(self):
         self.setup_model(tensor_parallel_size=4, pipeline_parallel_size=1)
 
@@ -117,9 +127,16 @@ class TestGPTInferenceWrapper:
             .cuda()
         )
         self.inference_wrapped_model.prep_model_for_inference(prompts_tokens=batch_prompt_tokens)
+        inference_input = self.inference_wrapped_model.prep_inference_input(
+            prompts_tokens=batch_prompt_tokens
+        )
 
-        inference_input = self.inference_wrapped_model.get_batch_for_context_window(0, 5)
-        logits = self.inference_wrapped_model.run_one_forward_step(inference_input)
+        inference_input_for_context_window = (
+            self.inference_wrapped_model.get_batch_for_context_window(inference_input, 0, 5)
+        )
+        logits = self.inference_wrapped_model.run_one_forward_step(
+            inference_input_for_context_window
+        )
 
         assert logits.shape == (
             self.batch_size,

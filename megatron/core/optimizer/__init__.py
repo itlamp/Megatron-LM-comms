@@ -30,7 +30,7 @@ from megatron.core import mpu
 
 from ..distributed.param_and_grad_buffer import _ParamAndGradBuffer
 from ..transformer.module import MegatronModule
-from ..utils import log_single_rank
+from ..utils import is_te_min_version, log_single_rank
 from .distrib_optimizer import DistributedOptimizer
 from .grad_scaler import ConstantGradScaler, DynamicGradScaler
 from .optimizer import (
@@ -265,39 +265,66 @@ def _get_megatron_optimizer_based_on_param_groups(
     Returns:
         Instance of MegatronOptimizer.
     """
-    if config.optimizer in ['adam', 'fusedadamw']:
-        optimizer_class = None
-        if config.optimizer == 'adam':
-            optimizer_class = Adam
-        elif config.optimizer == 'fusedadamw':
-            from habana_frameworks.torch.hpex.optimizers import FusedAdamW
 
-            optimizer_class = FusedAdamW
-        optimizer = optimizer_class(
-            param_groups,
-            lr=config.lr,
-            weight_decay=config.weight_decay,
-            betas=(config.adam_beta1, config.adam_beta2),
-            eps=config.adam_eps,
-        )
+    # when freezing sub-models we may have no trainable parameters on a rank and
+    # hence an empty param_groups. However, we still need to create an optimizer
+    # for the purposes of grad stats reductions
+    if param_groups:
+        if config.optimizer in ['adam', 'fusedadamw']:
+            optimizer_class = None
+            if config.optimizer == 'adam':
+                optimizer_class = Adam
+            elif config.optimizer == 'fusedadamw':
+                from habana_frameworks.torch.hpex.optimizers import FusedAdamW
 
-        def init_state_fn(opt):
-            for group in opt.param_groups:
-                for p in group['params']:
-                    if len(opt.state[p]) == 0:
-                        opt.state[p]['exp_avg'] = torch.zeros_like(p.data)
-                        opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
+                optimizer_class = FusedAdamW
+            kwargs = {
+                "params": param_groups,
+                "lr": config.lr,
+                "weight_decay": config.weight_decay,
+                "betas": (config.adam_beta1, config.adam_beta2),
+                "eps": config.adam_eps,
+            }
 
-    elif config.optimizer == 'sgd':
-        optimizer = SGD(
-            param_groups,
-            lr=config.lr,
-            weight_decay=config.weight_decay,
-            momentum=config.sgd_momentum,
-        )
-        init_state_fn = None
+            if config.use_precision_aware_optimizer:
+                kwargs.update(
+                    {
+                        "master_weights": True,
+                        "use_decoupled_grad": True,
+                        "master_weight_dtype": config.main_params_dtype,
+                        "exp_avg_dtype": config.exp_avg_dtype,
+                        "exp_avg_sq_dtype": config.exp_avg_sq_dtype,
+                    }
+                )
+
+                if is_te_min_version("2.1.0.dev0"):
+                    kwargs.update({"store_param_remainders": True})
+
+            optimizer = optimizer_class(**kwargs)
+
+            def init_state_fn(opt, config=None):
+                for group in opt.param_groups:
+                    for p in group['params']:
+                        if len(opt.state[p]) == 0:
+                            if config is None or not config.use_precision_aware_optimizer:
+                                opt.state[p]['exp_avg'] = torch.zeros_like(p.data)
+                                opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
+                            else:
+                                opt.initialize_state(p)
+
+        elif config.optimizer == 'sgd':
+            optimizer = SGD(
+                param_groups,
+                lr=config.lr,
+                weight_decay=config.weight_decay,
+                momentum=config.sgd_momentum,
+            )
+            init_state_fn = None
+        else:
+            raise Exception('{} optimizer is not supported.'.format(config.optimizer))
     else:
-        raise Exception('{} optimizer is not supported.'.format(config.optimizer))
+        optimizer = None
+        init_state_fn = None
 
     # Mixed precision optimizer.
     # - Note: both the Float16Optimizer and the DistributedOptimizer inherit
@@ -417,6 +444,7 @@ def get_megatron_optimizer(
             model_chunk.overlap_param_gather_with_optimizer_step = (
                 overlap_param_gather_with_optimizer_step
             )
+
         optimizers.append(
             _get_megatron_optimizer_based_on_param_groups(
                 config,
@@ -462,8 +490,5 @@ def get_megatron_optimizer(
                 data_parallel_group_idx=model_parallel_rank,
             )
         )
-
-    if len(optimizers) == 1:
-        return optimizers[0]
 
     return ChainedOptimizer(optimizers)

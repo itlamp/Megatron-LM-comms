@@ -3,7 +3,6 @@
 
 """Specs for Retro encoder."""
 
-from megatron.core.fusions.fused_dot_product_attention import FusedDotProductAttention
 from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_layer_local_spec,
     get_gpt_layer_with_transformer_engine_spec,
@@ -81,15 +80,7 @@ def get_retro_encoder_layer_te_spec() -> ModuleSpec:
         linear_q = TEColumnParallelLinear
         normalization_class = TENorm
     else:
-        enable_fsdpa = False
-        from intel_transformer_engine.utils import is_gaudi3
-
-        if is_gaudi3() and enable_fsdpa:
-            core_attention_class = IntelTEDotProductAttention
-        elif enable_fsdpa:
-            core_attention_class = FusedDotProductAttention
-        else:
-            core_attention_class = DotProductAttention
+        core_attention_class = IntelTEDotProductAttention
         linear_fc1 = IntelTEColumnParallelLinear
         linear_fc2 = IntelTERowParallelLinear
         linear_kv = IntelTEColumnParallelLinear
@@ -188,15 +179,7 @@ def get_retro_encoder_block_spec(
         if HAVE_TE:
             module = TEDotProductAttention
         else:
-            enable_fsdpa = False
-            from intel_transformer_engine.utils import is_gaudi3
-
-            if is_gaudi3() and enable_fsdpa:
-                module = IntelTEDotProductAttention
-            elif enable_fsdpa:
-                module = FusedDotProductAttention
-            else:
-                module = DotProductAttention
+            module = IntelTEDotProductAttention
     else:
         module = DotProductAttention
     for spec in (gpt_layer_spec, retro_layer_spec):

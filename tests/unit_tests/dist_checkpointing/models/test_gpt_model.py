@@ -1,4 +1,5 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
+
 import pytest
 import torch
 
@@ -52,7 +53,6 @@ def initialize_gpt_model(seed, layer_spec_fn=gpt_te_spec, vocab_size=128, **conf
 class TestGPTModel:
     @pytest.mark.parametrize('src_layer_spec_fn', [gpt_te_spec, gpt_local_spec])
     @pytest.mark.parametrize('dst_layer_spec_fn', [gpt_te_spec, gpt_local_spec])
-    @pytest.mark.flaky_in_dev
     def test_sharded_state_dict_save_load(
         self, tmp_path_dist_ckpt, src_layer_spec_fn, dst_layer_spec_fn
     ):
@@ -90,7 +90,6 @@ class TestGPTModelReconfiguration:
             (False, 'tp-dp-pp', 'tp-pp-dp', (2, 4), (2, 4), gpt_local_spec, gpt_local_spec),
         ],
     )
-    @pytest.mark.flaky_in_dev
     def test_parallel_reconfiguration_e2e(
         self,
         tmp_path_dist_ckpt,
@@ -116,7 +115,6 @@ class TestGPTModelReconfiguration:
             store_order,
         )
 
-    @pytest.mark.flaky_in_dev
     def test_state_dict_comparison(self, tmp_path_dist_ckpt):
         common_test_state_dict_comparison(initialize_gpt_model, tmp_path_dist_ckpt)
 
@@ -130,7 +128,6 @@ class TestGPTModelReconfiguration:
             (17, (1, 1), (1, 8)),
         ],
     )
-    @pytest.mark.flaky_in_dev
     def test_vocab_size_padding_change(
         self, tmp_path_dist_ckpt, vocab_size_base, src_tp_pp, dest_tp_pp
     ):

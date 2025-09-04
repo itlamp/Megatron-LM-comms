@@ -22,7 +22,10 @@ from megatron.core.dist_checkpointing.strategies.fully_parallel import (
     FullyParallelLoadStrategyWrapper,
     FullyParallelSaveStrategyWrapper,
 )
-from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
+from megatron.core.models.gpt.gpt_layer_specs import (
+    get_gpt_layer_local_spec,
+    get_gpt_layer_with_transformer_engine_spec,
+)
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.moe.experts import GroupedMLP, SequentialMLP, TEGroupedMLP
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -50,28 +53,44 @@ def initialize_expert_layer(seed, glu=True, expert_type='sequential', fp8=False,
         num_moe_experts=num_moe_experts,
         use_cpu_initialization=True,
         gated_linear_unit=glu,
+        fp8="hybrid" if fp8 else None,
     )
     default_config_kwargs.update(**config_kwargs)
     transformer_config = TransformerConfig(**default_config_kwargs)
-    transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
-        num_experts=num_moe_experts, moe_grouped_gemm=(expert_type != 'sequential'), fp8=fp8
-    )
     if expert_type == 'grouped':
         model = GroupedMLP(num_local_experts, transformer_config)
     elif expert_type == 'te_grouped':
+        transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+            num_experts=num_moe_experts, moe_grouped_gemm=True
+        )
         model = TEGroupedMLP(
             num_local_experts,
             transformer_config,
-            transformer_layer_spec.submodules.mlp.submodules.experts,
+            transformer_layer_spec.submodules.mlp.submodules.experts.submodules,
         )
     elif expert_type == 'sequential':
+        transformer_layer_spec = get_gpt_layer_local_spec(
+            num_experts=num_moe_experts, moe_grouped_gemm=False
+        )
         model = SequentialMLP(
             num_local_experts,
             transformer_config,
-            transformer_layer_spec.submodules.mlp.submodules.experts,
+            transformer_layer_spec.submodules.mlp.submodules.experts.submodules,
+        )
+    elif expert_type == 'te_sequential':
+        transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+            num_experts=num_moe_experts, moe_grouped_gemm=False
+        )
+        model = SequentialMLP(
+            num_local_experts,
+            transformer_config,
+            transformer_layer_spec.submodules.mlp.submodules.experts.submodules,
         )
     else:
-        raise ValueError('expert_type can only be one of ["sequential", "grouped", "te_grouped"]')
+        raise ValueError(
+            'expert_type can only be one of ["sequential", "te_sequential", "grouped",'
+            ' "te_grouped"]'
+        )
     return model
 
 
@@ -83,10 +102,14 @@ def get_pp_offsets():
 
 expert_type = ['sequential', 'grouped']
 src_dest_expert_type = [('sequential', 'grouped'), ('grouped', 'sequential')]
+if is_te_min_version("1.7.0.dev0"):
+    expert_type.append('te_sequential')
+    src_dest_expert_type.append(('sequential', 'te_sequential'))
+    src_dest_expert_type.append(('te_sequential', 'sequential'))
 if is_te_min_version("1.9.0.dev0"):
     expert_type.append('te_grouped')
-    src_dest_expert_type.append(('sequential', 'te_grouped'))
-    src_dest_expert_type.append(('te_grouped', 'sequential'))
+    src_dest_expert_type.append(('te_sequential', 'te_grouped'))
+    src_dest_expert_type.append(('te_grouped', 'te_sequential'))
 
 
 class TestExpertLayerReconfiguration:
@@ -96,6 +119,7 @@ class TestExpertLayerReconfiguration:
     def teardown_method(self, method):
         Utils.destroy_model_parallel()
 
+    @pytest.mark.internal
     @pytest.mark.parametrize(
         "use_fpsl,src_tp_pp_ep_etp,dest_tp_pp_ep_etp,use_glu",
         [
@@ -211,6 +235,7 @@ class TestExpertLayerReconfiguration:
             diffs = diff(state_dict_A, state_dict_B)
             assert not any(map(bool, diffs)), diffs
 
+    @pytest.mark.internal
     @pytest.mark.parametrize(
         "src_tp_pp_exp,dest_tp_pp_exp,use_glu",
         [
@@ -278,6 +303,7 @@ class TestExpertLayerReconfiguration:
             assert not any(map(bool, diffs)), diffs
             Utils.destroy_model_parallel()
 
+    @pytest.mark.internal
     @pytest.mark.skipif(
         not is_te_min_version("1.11.0"),
         reason="FP8 support of TEGroupedMLP is only available in TE 1.11.0 and later.",
@@ -287,10 +313,10 @@ class TestExpertLayerReconfiguration:
         "src_module,dst_module,src_tp_pp_exp,dest_tp_pp_exp",
         [
             # Changing tp/pp/dp doesn't affect _extra_state
-            ('sequential', 'te_grouped', (1, 1, 1), (1, 1, 4)),
-            ('sequential', 'te_grouped', (1, 1, 4), (1, 1, 1)),
-            ('te_grouped', 'sequential', (1, 1, 1), (1, 1, 4)),
-            ('te_grouped', 'sequential', (1, 1, 4), (1, 1, 1)),
+            ('te_sequential', 'te_grouped', (1, 1, 1), (1, 1, 4)),
+            ('te_sequential', 'te_grouped', (1, 1, 4), (1, 1, 1)),
+            ('te_grouped', 'te_sequential', (1, 1, 1), (1, 1, 4)),
+            ('te_grouped', 'te_sequential', (1, 1, 4), (1, 1, 1)),
         ],
     )
     def test_sequential_grouped_mlp_extra_state(
@@ -363,6 +389,7 @@ class TestExpertLayerReconfiguration:
 
             Utils.destroy_model_parallel()
 
+    @pytest.mark.internal
     @pytest.mark.skipif(
         not is_te_min_version("1.9.0"),
         reason="TEGroupedMLP is only supported in TE 1.9.0 and later.",

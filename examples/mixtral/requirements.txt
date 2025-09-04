@@ -1,6 +1,6 @@
 matplotlib
+prettytable
 regex
 seaborn
 sentencepiece
-tabulate
-tensorboard
+tensorboard==2.12

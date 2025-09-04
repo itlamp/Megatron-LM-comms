@@ -62,6 +62,9 @@ FP8_SMOOTH_SWIGLU=${HL_FP8_SMOOTH_SWIGLU:-1}
 USE_TORCH_COMPILE=${HL_USE_TORCH_COMPILE:-0}
 USE_TORCH_COMPILED_AUTOGRAD=${HL_USE_TORCH_COMPILED_AUTOGRAD:-0}
 TORCH_COMPILE_DISABLE=${HL_TORCH_COMPILE_DISABLE:-0}
+USE_REGIONAL_COMPILATION=${HL_USE_REGIONAL_COMPILATION:-0}
+USE_TE_CUSTOM_OP=${HL_USE_TE_CUSTOM_OP:-0}
+ALLOW_UNSPEC_INT_ON_NN_MODULE=${HL_ALLOW_UNSPEC_INT_ON_NN_MODULE:-0}
 CACHE_SIZE_LIMIT=${HL_CACHE_SIZE_LIMIT:-0}
 USE_LAZY_MODE=${HL_USE_LAZY_MODE:-1}
 SKIP_TRAIN=${HL_SKIP_TRAIN:-0}
@@ -73,9 +76,29 @@ ENV_FLAGS=${HL_ENV_FLAGS:-} #"a=1,b=2,c=3"
 NO_LOAD_OPTIM=${HL_NO_LOAD_OPTIM:-0}
 NO_LOAD_RNG=${HL_NO_LOAD_RNG:-0}
 OVERLAP_GRAD_REDUCE=${HL_OVERLAP_GRAD_REDUCE:-0}
+FP8_ENFORCE_BF16_AMAX_REDUCTION=${HL_FP8_ENFORCE_BF16_AMAX_REDUCTION:-1}
+OVERRIDE_OPT_PARAM_SCHEDULER=${HL_OVERRIDE_OPT_PARAM_SCHEDULER:-0}
+USE_CKPT_OPT_PARAM_SCHEDULER=${HL_USE_CKPT_OPT_PARAM_SCHEDULER:-0}
+NO_LOAD_STRICT=${HL_NO_LOAD_STRICT:-0}
+BF16=${HL_BF16:-1}
+USE_CPU_INIT=${HL_USE_CPU_INIT:-0}
 TORCHRUN_MULTINODE=${HL_TORCHRUN_MULTINODE:-0}
 TORCHRUN_NODE_RANK=${HL_TORCHRUN_NODE_RANK:-0}
 TORCHRUN_MASTER_ADDR=${HL_TORCHRUN_MASTER_ADDR:-localhost}
+SSH_PORT=${HL_SSH_PORT:-22}
+HNIC=${HL_HNIC:-0}
+
+# asserting that NUM_NODES is greater than 1 when HNIC is set to 1
+if [ "${HNIC}" = "1" ] && [ "${NUM_NODES}" -le 1 ]; then
+  echo "Exiting: Host Nic is enabled and NUM_NODES is not greater than 1"
+  exit 1
+fi
+#Host NIC variables
+if [[ "${HNIC}" -eq "1"  ]]; then
+    HCCL_OVER_OFI=${HL_HCCL_OVER_OFI:-1}
+    HCCL_GAUDI_DIRECT=${HL_HCCL_GAUDI_DIRECT:-1}
+    FI_PROVIDER=${HL_FI_PROVIDER:-verbs}
+fi
 
 if [[ -z "${MEGATRON_LM_ROOT}" ]]; then
     MEGATRON_LM_ROOT=$(realpath "$(dirname "$0")"/../../)
@@ -259,11 +282,14 @@ if [[ -z "${EXP_NAME}" ]]; then
 fi
 # output paths
 if [[ -z "${OUTPUT_DIR}" ]]; then
-    data_type="bf16"
     if [[ "${FP8}" -eq 1 ]]; then
         data_type="fp8"
+    elif [[ "${BF16}" -eq 1 ]]; then
+        data_type="bf16"
+    else
+        data_type="fp32"
     fi
-    OUTPUT_DIR=${OUTPUT_DIR_PREFIX}/out/llama${LLAMA_VER}_${LLAMA_MODEL_SIZE}b/${data_type}_${TRANSFORMER_IMPL}_${EXP_NAME}_ckpact${CKP_ACT}_nl${NUM_LAYERS}_hs${HIDDEN_SIZE}_ffn${FFN_HIDDEN_SIZE}_gb${GLOBAL_BATCH_SIZE}_mb${MICRO_BATCH_SIZE}_sp${SEQ_PARALLEL}_D${DP}_T${TP}_P${PP}_devices${NUM_DEVICES}_${RUNTIME}
+    OUTPUT_DIR=${OUTPUT_DIR_PREFIX}/out/llama${LLAMA_VER}_${LLAMA_MODEL_SIZE}b/${data_type}_${TRANSFORMER_IMPL}_${EXP_NAME}_ckpact${CKP_ACT}_nl${NUM_LAYERS}_hs${HIDDEN_SIZE}_ffn${FFN_HIDDEN_SIZE}_gb${GLOBAL_BATCH_SIZE}_mb${MICRO_BATCH_SIZE}_sp${SEQ_PARALLEL}_D${DP}_T${TP}_C${CP}_P${PP}_devices${NUM_DEVICES}_${RUNTIME}
 fi
 if [[ -z "${CHECKPOINTS_DIR}" ]]; then
     CHECKPOINTS_DIR=${OUTPUT_DIR}/checkpoints
@@ -279,7 +305,7 @@ mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${CHECKPOINTS_DIR}"
 mkdir -p "${TENSORBOARD_DIR}"
 
-if [[ "${NUM_NODES}" -ne "1" ]] && [[ -z "${HOSTSFILE}" ]]; then
+if [[ "${LAUNCHER_TYPE}" = "mpirun" ]] && [[ "${NUM_NODES}" -ne "1" ]] && [[ -z "${HOSTSFILE}" ]]; then
     HOSTSFILE=${MEGATRON_LM_ROOT}/examples/hostsfile
     if [[ -f "${HOSTSFILE}" ]]; then
         cat /dev/null > "${HOSTSFILE}"
@@ -294,7 +320,6 @@ fi
 
 # Setting the environment variables
 PT_HPU_GPU_MIGRATION=1
-PT_TE_ENFORCE_BF16_AMAX_REDUCTION=${HL_FP8_ENFORCE_BF16_AMAX_REDUCTION:-1}
 
 if [[ -z "${HL_TE_LIMIT_GRAPH_SIZE}" ]]; then
     # Limit TE graph size only for LLaMa 3.1 8B scenario
@@ -313,21 +338,27 @@ CMD=""
 if [[ "${LAUNCHER_TYPE}" = "mpirun" ]]; then
     CMD="${CMD} mpirun"
     CMD="${CMD} --allow-run-as-root"
+    CMD="${CMD} --mca plm_rsh_args -p${SSH_PORT}"
+    [[ -n "${MPI_ROOT}" ]] && CMD="$CMD --prefix ${MPI_ROOT}"
     CMD="${CMD} -n ${NUM_DEVICES}"
-    [[ -n "$HL_PE" ]] && __MAP_BY="socket:PE=${HL_PE}"
-    [[ -n "$HL_PE" ]] && [[ -n "${HL_PPR}" ]] && __MAP_BY="ppr:${HL_PPR}:socket:PE=${HL_PE}"
+    [[ -n "${HL_PE}" ]] && __MAP_BY="socket:PE=${HL_PE}"
+    [[ -n "${HL_PE}" ]] && [[ -n "${HL_PPR}" ]] && __MAP_BY="ppr:${HL_PPR}:socket:PE=${HL_PE}"
     if [[ -n "${__MAP_BY}" ]]; then
         CMD="${CMD} --bind-to core --rank-by core --report-bindings --map-by ${__MAP_BY}"
     else
         CMD="${CMD} --bind-to none"
     fi
+    if [[ "${HNIC}" -eq "1" ]]; then
+        CMD="${CMD} -x HCCL_OVER_OFI -x HCCL_GAUDI_DIRECT -x FI_PROVIDER -x LD_LIBRARY_PATH "
+    fi
     CMD="${CMD} -x PT_HPU_GPU_MIGRATION=${PT_HPU_GPU_MIGRATION}"
-    CMD="${CMD} -x PT_TE_ENFORCE_BF16_AMAX_REDUCTION=${PT_TE_ENFORCE_BF16_AMAX_REDUCTION}"
+    CMD="${CMD} -x PT_TE_ENFORCE_BF16_AMAX_REDUCTION=${FP8_ENFORCE_BF16_AMAX_REDUCTION}"
     CMD="${CMD} -x PT_TE_LIMIT_GRAPH_SIZE=${PT_TE_LIMIT_GRAPH_SIZE}"
     CMD="${CMD} -x PT_HPU_LAZY_MODE=${USE_LAZY_MODE}"
     if [[ "${TORCH_COMPILE_DISABLE}" = "1" ]]; then
         CMD="${CMD} -x TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE}"
     fi
+    CMD="${CMD} -x PT_TE_CUSTOM_OP=${USE_TE_CUSTOM_OP}"
     IFS=',' read -ra ENV_FLAGS_ARR <<< "$ENV_FLAGS"
     for ENV_FLAG in "${ENV_FLAGS_ARR[@]}"; do
         CMD="${CMD} -x ${ENV_FLAG}"
@@ -345,12 +376,18 @@ elif [[ "${LAUNCHER_TYPE}" = "torchrun" ]]; then
         exit 1
     fi
     export PT_HPU_GPU_MIGRATION=${PT_HPU_GPU_MIGRATION}
-    export PT_TE_ENFORCE_BF16_AMAX_REDUCTION=${PT_TE_ENFORCE_BF16_AMAX_REDUCTION}
+    export PT_TE_ENFORCE_BF16_AMAX_REDUCTION=${FP8_ENFORCE_BF16_AMAX_REDUCTION}
     export PT_TE_LIMIT_GRAPH_SIZE=${PT_TE_LIMIT_GRAPH_SIZE}
     export PT_HPU_LAZY_MODE=${USE_LAZY_MODE}
+    if [[ "${HNIC}" -eq "1" ]]; then
+        export HCCL_OVER_OFI=${HCCL_OVER_OFI}
+        export HCCL_GAUDI_DIRECT=${HCCL_GAUDI_DIRECT}
+        export FI_PROVIDER=${FI_PROVIDER}
+    fi
     if [[ "${TORCH_COMPILE_DISABLE}" = "1" ]]; then
         export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE}
     fi
+    export PT_TE_CUSTOM_OP=${USE_TE_CUSTOM_OP}
     IFS=',' read -ra ENV_FLAGS_ARR <<< "$ENV_FLAGS"
     for ENV_FLAG in "${ENV_FLAGS_ARR[@]}"; do
         export "${ENV_FLAG?}"
@@ -400,6 +437,7 @@ CMD="${CMD} \
     --min-lr ${MIN_LR} \
     --use-torch-compile=${USE_TORCH_COMPILE} \
     --use-torch-compiled-autograd=${USE_TORCH_COMPILED_AUTOGRAD} \
+    --allow-unspec-int-on-nn-module=${ALLOW_UNSPEC_INT_ON_NN_MODULE}
     --cache-size-limit=${CACHE_SIZE_LIMIT} \
     --use-fused-sdpa-with-recompute ${USE_FUSED_SDPA_WITH_RECOMPUTE} \
     --use-fused-sdpa ${USE_FUSED_SDPA} \
@@ -415,7 +453,6 @@ CMD="${CMD} \
     --no-gradient-accumulation-fusion \
     --no-masked-softmax-fusion \
     --use-mcore-models \
-    --bf16 \
     --exit-interval ${EXIT_INTERVAL} \
     --tensorboard-dir ${TENSORBOARD_DIR} \
     --log-validation-ppl-to-tensorboard \
@@ -429,13 +466,30 @@ CMD="${CMD} \
     --distributed-timeout-minutes 60 \
     "
 
+# Custom op solution, enabled conpile from second mini batch and regional compilation when use TE custom op.
+if [[ "${USE_TE_CUSTOM_OP}" -eq 1 ]]; then
+    CMD="${CMD} --compile-from-sec-mini-batch 1"
+    CMD="${CMD} --use-regional-compilation 1"
+else
+    CMD="${CMD} --use-regional-compilation ${USE_REGIONAL_COMPILATION}"
+fi
+
+# Precision fp32 -> bf16
+if [[ "${BF16}" -eq 1 ]]; then
+    CMD="${CMD} --bf16"
+fi
+
 if [[ "${SEQ_PARALLEL}" -eq 1 ]]; then
     CMD="${CMD} --sequence-parallel"
 fi
 
 # Set this for training on > 128 cards
-if [[ ${OVERLAP_GRAD_REDUCE} -eq 1 ]] || [[ ${NUM_DEVICES} -gt 128 ]]; then
+if [[ "${OVERLAP_GRAD_REDUCE}" -eq 1 ]] || [[ "${NUM_DEVICES}" -gt 128 ]]; then
     CMD="${CMD} --overlap-grad-reduce"
+fi
+
+if [[ "${USE_CPU_INIT}" -eq 1 ]]; then
+    CMD="${CMD} --use-cpu-initialization"
 fi
 
 # Enable device sync at every micro batch execution level only for LLaMa 3.1 8B scenario
@@ -470,10 +524,10 @@ fi
 if [[ "${USE_DISTRIBUTED_OPTIMIZER}" -eq 1 ]]; then
     CMD="${CMD} --use-distributed-optimizer"
 
-    if [ -n "$SAVE_DISTRIB_OPTIMIZER_METHOD" ]; then
+    if [[ -n "$SAVE_DISTRIB_OPTIMIZER_METHOD" ]]; then
         CMD="${CMD} --save-distrib-optimizer-method ${SAVE_DISTRIB_OPTIMIZER_METHOD}"
     fi
-    if [ -n "$LOAD_DISTRIB_OPTIMIZER_METHOD" ]; then
+    if [[ -n "$LOAD_DISTRIB_OPTIMIZER_METHOD" ]]; then
         CMD="${CMD} --load-distrib-optimizer-method ${LOAD_DISTRIB_OPTIMIZER_METHOD}"
     fi
 fi
@@ -495,11 +549,6 @@ if [[ "${TRANSFORMER_IMPL}" = "transformer_engine" && "${FP8}" -eq 1 ]]; then
     CMD="${CMD} --fp8-amax-history-len ${FP8_AMAX_HISTORY_LEN}"
     CMD="${CMD} --fp8-format ${FP8_FORMAT}"
     CMD="${CMD} --fp8-coverage ${FP8_COVERAGE}"
-
-    # # Add combined LLAMA_VERSION and MODEL_SIZE if both exist
-    if [[ -n "${LLAMA_VER}" && -n "${LLAMA_MODEL_SIZE}" ]]; then
-        CMD="${CMD} --model-name llama${LLAMA_VER}-${LLAMA_MODEL_SIZE}b"
-    fi
 
     if [[ "${FP8_AMAX_REDUCE}" -eq 1 ]]; then
         CMD="${CMD} --fp8-amax-reduce"
@@ -536,6 +585,23 @@ if [[ "${CHECKPOINT_SAVE}" -eq 1 ]]; then
         CMD="${CMD} --verify-checkpoint"
         CMD="${CMD} --verify-checkpoint-model-type LLAMA"
     fi
+fi
+
+if [[ "${OVERRIDE_OPT_PARAM_SCHEDULER}" -eq 1 && "${USE_CKPT_OPT_PARAM_SCHEDULER}" -eq 1 ]]; then
+    echo "Both OVERRIDE_OPT_PARAM_SCHEDULER and USE_CKPT_OPT_PARAM_SCHEDULER are set"
+    exit 1
+fi
+
+if [[ "${OVERRIDE_OPT_PARAM_SCHEDULER}" -eq 1 ]]; then
+    CMD="${CMD} --override-opt_param-scheduler"
+fi
+
+if [[ "${USE_CKPT_OPT_PARAM_SCHEDULER}" -eq 1 ]]; then
+    CMD="${CMD} --use-checkpoint-opt_param-scheduler"
+fi
+
+if [[ "${NO_LOAD_STRICT}" -eq 1 ]]; then
+    CMD="${CMD} --no-load-strict"
 fi
 
 if [[ ${NO_LOAD_OPTIM} -eq 1 ]]; then

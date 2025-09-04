@@ -1,5 +1,6 @@
 # Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 """Pretrain or SFT multimodal."""
+import math
 import os
 import sys
 from functools import partial
@@ -66,11 +67,19 @@ def get_batch(data_iterator):
     cu_lengths = tensor_parallel.broadcast_data(["cu_lengths"], data, torch.int32)["cu_lengths"]
     max_lengths = tensor_parallel.broadcast_data(["max_lengths"], data, torch.int32)["max_lengths"]
 
-    # No image input (text-only sample) if the dataloader produced a dummy image.
+    # No image input (text-only sample) if the dataloader returned a size 1 image.
     if imgs.shape == torch.Size([1, 1]):
-        # FIXME: text-only data can cause a hang if the vision model is own its own pipeline rank and --freeze-ViT is enabled.
-        imgs = torch.tensor([], dtype=torch.float32, device=data_text.device)
-        num_tiles = torch.tensor([], dtype=torch.int, device=data_text.device)
+        # FSDP can hang with text-only samples. A workaround is to run a valid dummy image through the vision
+        # model and then add image embeddings with a zero multiplier.
+        if args.use_torch_fsdp2:
+            imgs = torch.zeros((1, 3, args.img_h, args.img_w), dtype=torch.float32, device=data_text.device)
+            num_tiles = torch.tensor([], dtype=torch.int, device=data_text.device)
+        else:
+            # Similar workaround is not needed without FSDP and we can use an empty image.
+            # FIXME: text-only data can cause still cause a hang in the special case where
+            # the vision model is own its own pipeline rank and --freeze-ViT is enabled.
+            imgs = torch.tensor([], dtype=torch.float32, device=data_text.device)
+            num_tiles = torch.tensor([], dtype=torch.int, device=data_text.device)
 
     # Last pipeline parallel stage doesn't need images.
     if pp_size > 1 and is_pipeline_last_stage():
@@ -137,6 +146,79 @@ def get_ltor_masks_and_position_ids(input_ids, target, pad_token):
     return loss_mask, position_ids
 
 
+def get_mask_start_and_end_idx(arr):
+    """
+    Returns a list of tuples holding the start and end index in arr of the non-zeros contiguuous
+    sub arrays.
+
+    For instance, if arr = [0, 1, 0, 0, 1, 1]
+    get_mask_start_and_end_idx(arr) = [(1, 1), (4, 5)]
+    such that arr[1:1+1] = [1] and arr[4:5+1] = [1, 1]
+    """
+    mask = (arr != 0)
+
+    mask_int = mask.int()
+
+    diff = mask_int[1:] - mask_int[:-1]
+    start_indices = (diff == 1).nonzero(as_tuple=False).flatten() + 1
+    end_indices = (diff == -1).nonzero(as_tuple=False).flatten()
+    if len(mask)==0: return []
+    if mask[0]:
+        start_indices = torch.cat((torch.tensor([0], device=arr.device), start_indices))
+    if mask[-1]:
+        end_indices = torch.cat((end_indices, torch.tensor([len(arr) - 1], device=arr.device)))
+    sequences = list(zip(start_indices.tolist(), end_indices.tolist()))
+    return sequences
+
+
+def scaled_loss_func(loss_mask, output_tensor):
+    """
+    Scaled loss function
+
+    Scale the loss for each conversation turn using the formula:
+
+    1 / sum_j[ sqrt(length(loss_turn_j)) ] * sum_i[ sum(loss_turn_i) / sqrt(length(loss_turn_i)) ]
+
+    Where we use the loss mask to infer the start / end of the conversation turns.
+    """
+    losses = output_tensor.float()
+
+    loss_list = []
+    num_valid_labels_list = []
+    for idx in range(losses.shape[0]):
+        loss_this_sample = losses[idx]
+        turn_start_end_list = get_mask_start_and_end_idx(loss_mask[idx])
+        for turn_start, turn_end in turn_start_end_list:
+            # compute loss for each turn
+            loss_this_turn = loss_this_sample[turn_start:turn_end+1].sum()
+            assert (1 - loss_mask)[idx][turn_start:turn_end+1].sum() < 1.0
+            num_valid_labels_this_turn = turn_end - turn_start + 1
+            loss_this_turn = loss_this_turn / num_valid_labels_this_turn
+            loss_list.append(loss_this_turn)
+            # append num of valid labels for each turn
+            num_valid_labels_list.append(num_valid_labels_this_turn)
+    base_num = sum([math.sqrt(each) for each in num_valid_labels_list])
+    for idx in range(len(loss_list)):
+        # normalize loss for each turn
+        loss_list[idx] = loss_list[idx] * math.sqrt(num_valid_labels_list[idx]) / base_num
+
+    total_loss = torch.stack(loss_list).sum()
+    total_tokens = torch.ones_like(total_loss)
+
+    loss = torch.cat([total_loss.view(1), total_tokens.view(1)])
+
+    reporting_loss = loss.clone().detach()
+    torch.distributed.all_reduce(reporting_loss, group=mpu.get_data_parallel_group())
+
+    local_num_tokens = loss[1].clone().detach().to(torch.int)
+
+    return (
+        total_loss,
+        local_num_tokens,
+        {'lm loss': (reporting_loss[0], reporting_loss[1])},
+    )
+
+
 def loss_func(loss_mask, output_tensor):
     losses = output_tensor.float()
 
@@ -191,8 +273,13 @@ def forward_step(data_iterator, model: LLaVAModel):
         num_image_tiles=num_image_tiles,
         packed_seq_params=packed_seq_params,
     )
+    args = get_args()
+    if args.use_loss_scaling:
+        loss_function = partial(scaled_loss_func, loss_mask)
+    else:
+        loss_function = partial(loss_func, loss_mask)
 
-    return output_tensor, partial(loss_func, loss_mask)
+    return output_tensor, loss_function
 
 
 def llava_embedding_ranks(pp_ranks):
@@ -280,40 +367,6 @@ def write_online_eval_to_tensorboard(data, iteration, writer):
     for item in data:
         for k, v in item.items():
             writer.add_scalar(k, v, iteration)
-
-
-def llava_embedding_ranks(pp_ranks):
-    """LLava's embedding ranks consist of the decoder's first and last ranks (ie, the ViT has no embeddings).
-    Args:
-        pp_ranks: A list of global ranks that constitute a pipeline group.
-    """
-    args = get_args()
-
-    # encoder size is also the index to the first rank of the decoder.
-    epp = args.encoder_pipeline_model_parallel_size
-
-    last_rank = pp_ranks[-1]
-    if len(pp_ranks) == 1 or pp_ranks[epp] == last_rank:
-        return [last_rank]
-    else:
-        return [pp_ranks[epp], last_rank]
-
-
-def llava_position_embedding_ranks(pp_ranks):
-    """LLava's embedding ranks consist of the singular rank of the model or the decoder's first rank.
-    Args:
-        pp_ranks: A list of global ranks that constitute a pipeline group.
-    """
-    args = get_args()
-
-    # encoder size is also the index to the first rank of the decoder.
-    epp = args.encoder_pipeline_model_parallel_size
-
-    last_rank = pp_ranks[-1]
-    if len(pp_ranks) == 1:
-        return [last_rank]
-    else:
-        return [pp_ranks[epp]]
 
 
 if __name__ == "__main__":
