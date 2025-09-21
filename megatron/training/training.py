@@ -89,6 +89,7 @@ from .utils import (
     logical_and_across_model_parallel_group,
     reduce_max_stat_across_model_parallel_group,
     is_last_rank,
+    is_rank0,
     print_rank_0,
     print_rank_last,
     report_memory,
