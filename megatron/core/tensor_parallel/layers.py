@@ -1134,12 +1134,12 @@ class RowParallelLinear(torch.nn.Module):
                 )
         setattr(self.weight, 'allreduce', not (self.is_expert and self.expert_parallel))
         
-        hidden, _ = self.weight.shape
-        p = config.asynch_p
-        tp_size = get_tensor_model_parallel_world_size()
-        if p != 1:
-            hidden = int(hidden*p)
-            self.weight.data[hidden:,:]=self.weight.data[hidden:,:]*(tp_size**(1/2))
+        # hidden, _ = self.weight.shape
+        # p = config.asynch_p
+        # tp_size = get_tensor_model_parallel_world_size()
+        # if p != 1:
+        #     hidden = round(hidden*p)
+        #     self.weight.data[hidden:,:]=self.weight.data[hidden:,:]*(tp_size**(1/2))
 
         if bias:
             if config.use_cpu_initialization:
@@ -1230,6 +1230,12 @@ class RowParallelLinear(torch.nn.Module):
         else:
             output = output_
             output_bias = self.bias
+        tp_size = get_tensor_model_parallel_world_size()
+        p = self.config.asynch_p
+        hidden, _ = self.weight.shape
+        hidden_ = int(hidden*p)
+
+        output = ForwardScaling.apply(output, hidden_, tp_size)
         return output, output_bias
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
@@ -1253,3 +1259,20 @@ class RowParallelLinear(torch.nn.Module):
             f"{type(self).__name__}(in_features={self.input_size}, "
             f"out_features={self.output_size}, bias={use_bias}, TP={tp})"
         )
+class ForwardScaling(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, hidden, scale):
+        ctx.hidden = hidden
+        ctx.scale = scale
+        # if get_tensor_model_parallel_rank() == 0:
+        #     breakpoint()
+        input[..., hidden:] = input[..., hidden:] * ((scale)**(1/2))
+        return input
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        hidden = ctx.hidden
+        scale = ctx.scale
+        grad_output[..., hidden:] = grad_output[..., hidden:] * ((scale)**(1/2))
+
+        return grad_output, None, None
