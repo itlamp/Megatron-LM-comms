@@ -242,16 +242,16 @@ elif [[ "${LLAMA_VER}" = "3.2" ]]; then
     MAX_SEQ_LEN=${HL_SEQ_LEN:-2048}
     TRAIN_ITERS=${HL_TRAIN_ITERS:-937500}
     ADAM_EPS=1e-5
-    LR_WARMUP_ITERS=8000
+    LR_WARMUP_ITERS=2000
     ROTARY_BASE=500000
     if [[ "${LLAMA_MODEL_SIZE}" = "1" ]]; then
         HIDDEN_SIZE=${HL_HIDDEN_SIZE:-2048}
         NUM_HEADS=${HL_NUM_HEADS:-32} # must be divisible by TP
         NUM_QUERY_GROUPS=${HL_NUM_QUERY_GROUPS:-8} # must be divisible by TP
-        NUM_LAYERS=${HL_NUM_LAYERS:-16} # must be divisible by PP
-        FFN_HIDDEN_SIZE=${HL_FFN_HIDDEN_SIZE:-8192}
+        NUM_LAYERS=${HL_NUM_LAYERS:-22} # must be divisible by PP
+        FFN_HIDDEN_SIZE=${HL_FFN_HIDDEN_SIZE:-5632}
         LR=4e-4
-        MIN_LR=4e-6
+        MIN_LR=4e-5
     else
         echo "invalid LLAMA_MODEL_SIZE: ${LLAMA_MODEL_SIZE}"
         exit 1
@@ -266,8 +266,8 @@ elif [ "$LLAMA_VER" = "0" ]; then
     ROTARY_BASE=10000
     if [[ ${LLAMA_MODEL_SIZE} == 125 ]]; then
         HIDDEN_SIZE=768
-        NUM_HEADS=12
-        NUM_QUERY_GROUPS=12
+        NUM_HEADS=16
+        NUM_QUERY_GROUPS=16
         NUM_LAYERS=${HL_NUM_LAYERS:-12}
         FFN_HIDDEN_SIZE=2048
         LR=6e-4

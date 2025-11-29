@@ -1,54 +1,24 @@
-# LLM for PyTorch
+# LLM training with Partial Activation Syncronization
 
-This directory provides scripts to train the GPT-based models in the Megatron-LM repository on Intel® Gaudi® 2 & Gaudi® 3 AI accelerators.
-Before you get started, make sure to review the [Supported Configurations](#supported-configurations).
-
-## Table of Contents
-* [Megatron Overview](#megatron-overview)
-* [Setup](#setup)
-* [Supported Configurations](#supported-configurations)
-* [Changelog](#changelog)
-* [Known Issues](#known-issues)
-
-# Megatron Overview
-This implementation is based on https://github.com/NVIDIA/Megatron-LM at core_r0.9.0.
-
-This repository comprises two essential components: Megatron-LM and Megatron-Core. Megatron-LM serves as a research-oriented framework leveraging Megatron-Core for large language model (LLM) training. Megatron-Core, on the other hand, is a library of optimized training techniques including versioned APIs and regular releases. Alternatively, you can integrate Megatron-Core's building blocks into your preferred training framework.
-
-## Megatron-LM
-First introduced in 2019, Megatron ([1](https://arxiv.org/pdf/1909.08053), [2](https://arxiv.org/pdf/2104.04473), and [3](https://arxiv.org/pdf/2205.05198)) sparked a wave of innovation in the AI community, enabling researchers and developers to utilize the underpinnings of this library to further LLM advancements.
-
-## Megatron-Core
-Megatron-Core is an open-source PyTorch-based library that contains optimized techniques and cutting-edge system-level optimizations. It abstracts them into composable and modular APIs, allowing full flexibility for developers and model researchers to train custom transformers at-scale on accelerated computing infrastructure.
-
-Megatron-Core offers core building blocks such as attention mechanisms, transformer blocks and layers, normalization layers, and embedding techniques. Additional functionality like activation recomputation, distributed checkpointing is also natively built-in to the library. The building blocks and functionality are all optimized, and can be built with advanced parallelization strategies for optimal training speed and stability on Accelerated Computing Infrastructure. Another key component of the Megatron-Core library includes advanced model parallelism techniques (tensor, sequence, pipeline, context, and MoE expert parallelism).
+This directory provides training scripts for the paper [Tensor-Parallelism with Partially Synchronized Activations](https://arxiv.org/abs/2506.19645), and enables training CAAT-Net models using partial activation synchronization on Intel® Gaudi® 2 & Gaudi® 3 AI accelerators. This implementation is based on https://github.com/NVIDIA/Megatron-LM, and is a fork of Intel's https://github.com/HabanaAI/Megatron-LM. 
 
 
-## How to Use
-Users bear sole liability and responsibility to follow and comply with any third party licenses, and Intel Corporation disclaims and will bear no liability with respect to users’ use or compliance with third party licenses.
-* Third-Party Models
-  * In the course of using Megatron-LM, users may choose to download models created and distributed by third parties after reviewing background information about the models and agreeing to the license governing those models.
-  * Notice: Intel does not create the content and does not warrant its accuracy or quality. By accessing the third-party content, or using materials trained on or with such content, you are indicating your acceptance of the terms associated with that content and warranting that your use complies with the applicable license.
-  * Intel expressly disclaims the accuracy, adequacy, or completeness of any such third-party content, and is not liable for any errors, omissions, or defects in the content, or for any reliance on the content. You agree Intel is not liable for any liability or damages relating to your use of third-party content.
-  * Intel’s identification of these resources does not expand or otherwise alter Intel’s applicable published warranties or warranty disclaimers for Intel products or solutions, and you agree that no additional obligations, indemnifications, or liabilities arise from Intel identifying such resources. Intel reserves the right, without notice, to make corrections, enhancements, improvements, and other changes to its materials.
+## Setup
+Please follow the instructions provided in the [Intel Gaudi Installation Guide](https://docs.habana.ai/en/latest/Installation_Guide/index.html) to set up the environment including the `$PYTHON` environment variable. 
 
-
-# Setup
-Please follow the instructions provided in the [Intel Gaudi Installation Guide](https://docs.habana.ai/en/latest/Installation_Guide/index.html)
-to set up the environment including the `$PYTHON` environment variable. To achieve the best performance, please follow the methods outlined in the [Optimizing Training Platform guide](https://docs.habana.ai/en/latest/PyTorch/Model_Optimization_PyTorch/Optimization_in_Training_Platform.html).
-The guides will walk you through the process of setting up your system to run the model on Gaudi 2 and Gaudi 3.
+This repository is meant to be executed on the Intel Gaudi 1.22.0 software release. 
 
 ## Prerequisites
-* When creating Docker container, set the shared memory size as 10 GB through the Docker run command:
+When creating Docker container, set the shared memory size as 10 GB through the Docker run command:
   ```bash
   --shm-size=10g
   ```
 
 ## Clone Intel Gaudi Megatron-LM
-In the Docker container, clone this repository and switch to the branch that matches your Intel Gaudi software version.
-You can run the [`hl-smi`](https://docs.habana.ai/en/latest/System_Management_Tools_Guide/System_Management_Tools.html#hl-smi-utility-options) utility to determine the Intel Gaudi software version.
+In the docker container corresponding to the 1.22.0 software version, clone this repository. You can run the [`hl-smi`](https://docs.habana.ai/en/latest/System_Management_Tools_Guide/System_Management_Tools.html#hl-smi-utility-options) utility to determine the Intel Gaudi software version.
+
 ```bash
-git clone -b [Intel Gaudi software version] https://github.com/HabanaAI/Megatron-LM
+git clone https://github.com/itlamp/Megatron-LM-comms.git
 ```
 Set the required environment variables as shown below:
 ```
@@ -69,70 +39,42 @@ export PYTHONPATH=$MEGATRON_LM_ROOT:$PYTHONPATH
   pip install -r megatron/core/requirements_1.20.txt
   ```
 
-* To run training on more than 128 cards, apply the below configuration changes:
-  ```bash
-  echo '*    soft nofile  unlimited' >> /etc/security/limits.conf
-  echo '*    hard nofile  unlimited' >> /etc/security/limits.conf
-  echo 'root soft nofile  unlimited' >> /etc/security/limits.conf
-  echo 'root hard nofile  unlimited' >> /etc/security/limits.conf
-  ```
+## Training Scripts
 
+Attached are commands to launch training of the 130M, 1B and 7B parameter Llama-based models detailed in the paper. 
 
-# Supported Configurations
-| Model                                       | Mode        | Intel Gaudi software Version | PyTorch Version | Validated on Gaudi 2 | Validated on Gaudi 3  |
-| --------------------------------------------| ----------- | ---------------------------- | --------------- | -------------------- | --------------------- |
-| [LLaMA 3.1](examples/llama/README.md)       | Pretraining | 1.22.0                       | 2.7.1           | :heavy_check_mark:   | :heavy_check_mark:*   |
-| [Mixtral 8x7B](examples/mixtral/README.md)  | Pretraining | 1.22.0                       | 2.7.1           | :heavy_check_mark:** | :heavy_check_mark:*** |
-| [DeepSeek V3](examples/deepseek/README.md)  | Pretraining | 1.22.0                       | 2.7.1           | :heavy_check_mark:** |                       |
+### Running Llama models in Megatron-LM
 
+First, see examples/llama/README.md for more information on prerequisites for running Llama on Gaudi. These are identical to the requirements in the upstream [HabanaAI/Megatron-LM](https://github.com/HabanaAI/Megatron-LM) repository.
 
-*Sporadic numerical instability can occur when training with fp8 precision.
+### Configuring CAAT-Net
+The files examples/llama/run_llama_<model_size>.sh set the arguments necessary for training. Synchronization factor $p$ is controlled by the environment variable HL_ASYNCH, and the tensor-parallel dimension is controled by HL_TP. The defaults are $p$=0.5 and tensor-parallel dimension 8.
 
-**Only BF16 configurations are currently enabled.
+Furthermore, one should set the dataset and tokenizer path inside these files before execution.
 
-***Only BF16, lazy and eager configurations are currently enabled.
+### 130M model
+```
+cd $MEGATRON_LM_ROOT
+bash examples/llama/run_llama_130M.sh
+```
 
-# Changelog
-## 1.22.0
-- Rebased code to upstream [core_r0.11.0](https://github.com/NVIDIA/Megatron-LM/tree/core_r0.11.0) release.
-- Added support for zeroshot wikitext and lambada evaluation of Llama models and and usage is available [here](./tasks/zeroshot_gpt/README.md).
-- Added mpirun --prefix ${MPI_ROOT} option to LLaMA and Mixtral examples.
-- Added Host NIC settings support for LLaMA and  Mixtral examples.
-- Added DeepSeek V3 Model support with bfloat16 data type.
-- Added torch.compile support for Mixtral (on Gaudi 2).
+### 1B model
+```
+cd $MEGATRON_LM_ROOT
+bash examples/llama/run_llama_1B.sh
+```
 
-## 1.21.0
-- Rebased code to upstream [core_r0.10.0](https://github.com/NVIDIA/Megatron-LM/tree/core_r0.10.0) release.
-- Added different levels of memory optimization for exporting or loading distributed optimizer states, controlled via an argument.
-- Added mpirun core affinity settings support for LLaMA & Mixtral examples using `HL_PE` and `HL_PPR`.
-- Enabled Dynamic MoE computation on HPU with `IntelDynamicMLP` which supports bf16 and fp32 precision. Token routing inside the EP/TP group and reductions in and between groups are internalized within the fused MoE kernel, which speeds up training and improves token balancing by minimizing padding. No tokens are dropped. DP/TP/EP/PP/SP modes are supported.
-- Added support for Context Parallelism through Intel Transformer Engine with BF16 data type.
+### 7B model
+```
+cd $MEGATRON_LM_ROOT
+bash examples/llama/run_llama_7B.sh
+```
 
-## 1.20.0
-- Changed the default behavior of "accumulate_allreduce_grads_in_fp32" for the bfloat16 data type. Instead of performing gradient accumulation and all-reduce in fp32, it is sufficient to do so in bfloat16 for some configurations. However, for configurations where Gradient Accumulutation Steps * data parallel size > 256, switching to fp32 is necessary.
-- Rebased code to upstream [core_r0.9.0](https://github.com/NVIDIA/Megatron-LM/tree/core_r0.9.0) release.
+For speedup measurments, switch to the speedup branch (Currently not available, will be published shortly):
 
-## 1.19.0
- - Added support for Gaudi 3.
- - Added LLaMA 3.1 support and set as default.
- - Added Megatron-LM to Hugging Face LLaMA and Mixtral checkpoint conversion support. Usage example is available [here](./tools/checkpoint/README.md#llama-convert-megatron-lm-to-hugging-face-checkpoint).
- - Added Hugging Face to Megatron-LM LLaMA and Mixtral checkpoint conversion support. Usage example is available [here](./tools/checkpoint/README.md#llama-convert-hugging-face-checkpoint-to-megatron-lm).
- - Added Mixtral 8x7b BF16 support (preview version) [here](./examples/mixtral/README.md).
+``` 
+git checkout speedup
+```
 
-## 1.18.0
- - Initial release.
-
-### Script Modifications
-Major changes done to the original code from [NVIDIA/Megatron-LM](https://github.com/NVIDIA/Megatron-LM/tree/core_r0.9.0) repository:
-* Changed README file content.
-* Added HPU support.
-* Added local RMSNorm support.
-* Added support for HPU fused ops.
-* Added checkpoint verification.
-* Added kill-switch mechanism to gracefully stop training.
-
-
-# Known Issues
-* Only recipes mentioned in this README are supported and verified.
-* For certain configurations, the first run of a workload may show lower performance. In such cases, it is recommended to stop and restart the run.
-* Minor variations may be visible in the performance metrics reported at every step, but they are expected to stabilize over time.
+## Megatron-LM
+First introduced in 2019, Megatron ([1](https://arxiv.org/pdf/1909.08053), [2](https://arxiv.org/pdf/2104.04473), and [3](https://arxiv.org/pdf/2205.05198)) sparked a wave of innovation in the AI community, enabling researchers and developers to utilize the underpinnings of this library to further LLM advancements.

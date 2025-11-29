@@ -181,10 +181,14 @@ def _allreduce_layernorm_grads(model: List[torch.nn.Module], config: Transformer
 
     if parallel_state.get_tensor_model_parallel_world_size() > 1:
         grads = []
+        params = []
         for model_chunk in model:
             for name, param in get_attr_wrapped_model(model_chunk, 'named_parameters')():
                 if param.requires_grad and  'layernorm' in name:
-                    grad = param.main_grad
+                    params.append(param)
+                    grad_attr = "main_grad" if hasattr(param, "main_grad") else "grad"
+                    grad = getattr(param, grad_attr)
+                    grad = _unshard_if_dtensor(grad)
                     grads.append(grad.data)
         if grads:
             coalesced = _flatten_dense_tensors(grads)
